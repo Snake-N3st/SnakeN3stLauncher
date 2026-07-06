@@ -1,0 +1,31 @@
+# bootstrap
+
+The tiny, rarely-updated stub actually distributed to players. Contains no
+GPL code and no dependency on the `launcher` module - see the top-level
+plan's "Deux artefacts, un seul JVM actif à la fois" for why this split
+exists.
+
+- **`BootstrapMain`** — the only entry point. Reads `sn3.baseUrl`/
+  `sn3.clientId` (same JVM properties `launcher.Main` reads - required,
+  exits with an error if `clientId` is missing), fetches the latest release
+  info, downloads it if not already cached under `AppDirs#cacheLauncher()`
+  (skips the download entirely if a jar matching the announced SHA-256 is
+  already there), spawns `java -jar <cached-jar>` with the same two
+  properties forwarded, then **exits immediately** - never two JVMs running
+  at once.
+
+- **`LauncherReleaseClient`** — talks to `GET /api/launcher-auth/releases/latest`
+  and `GET /api/launcher-auth/releases/{version}/download` directly via
+  `java.net.http` (see `LAUNCHER_INTEGRATION.md` section 8 in the sibling
+  `SnakeN3stLogin` repo). Deliberately independent of `launcher.net.HttpJsonClient` -
+  this module must never depend on `launcher`. Downloads go through
+  `common.util.AtomicFiles#writeVerified`, so a corrupted/tampered transfer
+  is discarded before ever landing at the real cache path - the same rigor
+  applied to modpack blobs, since this is code we're about to *execute*.
+
+- **`LauncherReleaseInfo`** — mirrors the JSON shape of the `latest`
+  endpoint (`version`, `sha256`, `size`, `changelog`, `download_url`).
+
+Depends only on `common` (paths/hashing/logging) plus Gson for the tiny
+JSON response - no UI toolkit, no crypto library beyond what's needed to
+verify a hash, nothing GPL.

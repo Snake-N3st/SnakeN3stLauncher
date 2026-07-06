@@ -5,13 +5,62 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>mc.snakenest.launcher</groupId>
-    <artifactId>SnakeN3stLauncher</artifactId>
+    <artifactId>snaken3st-launcher-parent</artifactId>
     <version>1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <!--
+        Two independently-distributed artifacts:
+        - bootstrap: tiny, rarely-updated stub. No GPL dependencies. Downloads and
+          runs the latest "launcher" jar published on the site.
+        - launcher: the complete application. Embeds FlowUpdater/OpenLauncherLib
+          (GPL-3.0), see launcher/LICENSE.
+        Kept as a single reactor so both build with one `mvn package`, but each
+        module's pom controls its own dependencies/packaging independently.
+    -->
+    <modules>
+        <module>common</module>
+        <module>bootstrap</module>
+        <module>launcher</module>
+    </modules>
 
     <properties>
-        <maven.compiler.source>17</maven.compiler.source>
-        <maven.compiler.target>17</maven.compiler.target>
+        <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <junit.version>5.11.3</junit.version>
     </properties>
 
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.5.2</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-shade-plugin</artifactId>
+                    <version>3.6.0</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
 </project>
