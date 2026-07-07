@@ -3,3 +3,7 @@ target/
 *.iml
 .DS_Store
 dependency-reduced-pom.xml
+
+# A real per-deployment client id (see common/util/ClientIds) - drop one locally before
+# packaging a turnkey single-client build, never commit it (this repo is public/GPL-3.0).
+**/src/main/resources/.clientId

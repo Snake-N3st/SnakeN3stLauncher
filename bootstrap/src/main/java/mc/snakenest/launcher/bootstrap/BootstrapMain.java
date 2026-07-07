@@ -1,6 +1,7 @@
 package mc.snakenest.launcher.bootstrap;
 
 import mc.snakenest.launcher.util.AppDirs;
+import mc.snakenest.launcher.util.ClientIds;
 import mc.snakenest.launcher.util.Log;
 import mc.snakenest.launcher.util.Sha256;
 
@@ -32,9 +33,9 @@ public final class BootstrapMain {
         AppDirs dirs = new AppDirs();
         Log.initialize(dirs);
 
-        String clientId = System.getProperty("sn3.clientId");
-        if (clientId == null || clientId.isBlank()) {
-            System.err.println("Missing required -Dsn3.clientId system property.");
+        String clientId = ClientIds.resolve(System.getProperty("sn3.clientId"));
+        if (clientId == null) {
+            System.err.println("Missing sn3.clientId: neither -Dsn3.clientId nor a bundled .clientId resource is set.");
             System.exit(1);
             return;
         }

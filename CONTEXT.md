@@ -19,37 +19,75 @@ Minecraft. Deux repos liés :
   API de référence (à jour, inclut les ajouts faits pendant cette session).
 
 **État global : les 15 tâches du plan initial sont terminées.** Le launcher
-compile, ses 68 tests passent, et le flux complet a été vérifié en vrai
+compile, ses tests passent, et le flux complet a été vérifié en vrai
 (pas juste en tests unitaires) contre l'instance Azuriom locale : login réel,
-liste/téléchargement de modpacks réels, et même le vrai jar packagé
-`bootstrap` téléchargeant et lançant le vrai jar packagé `launcher` depuis le
-serveur. Rien n'a été testé en conditions réelles pour l'installation/lancement
-d'un vrai Minecraft (ça demanderait de télécharger un vrai jeu) — c'est la
-principale zone non vérifiée en pratique, clairement signalée dans le code
-(`game/README.md`).
+liste/téléchargement de modpacks réels, le vrai jar packagé `bootstrap`
+téléchargeant et lançant le vrai jar packagé `launcher` depuis le serveur, et
+— confirmé par l'utilisateur — un vrai modpack Forge installé et lancé de
+bout en bout avec succès. Le doute qui restait sur ce point précis
+(`game/README.md` le signalait comme "jamais exercé en vrai") est donc levé.
 
-**Rien n'a été commité dans git.** Tout le travail est dans l'arbre de travail
-(untracked). Ne jamais committer sans demande explicite.
+**Le repo est commité et poussé sur GitHub** (`origin/main`,
+`git@github.com:Snake-N3st/SnakeN3stLauncher.git`), publiquement visible —
+condition nécessaire puisque `launcher`/`common` sont GPL-3.0 (voir section 2).
+Continuer à ne jamais committer/pousser sans demande explicite de
+l'utilisateur ; c'est lui qui gère ses propres commits/releases.
 
 ## 2. Architecture : reactor Maven à 3 modules
 
 ```
 SnakeN3stLauncher/
 ├── common/      utilitaires zéro-dépendance partagés (AppDirs, Hex, Sha256, AtomicFiles, Log)
+│                → licence GPL-3.0 (voir common/LICENSE)
 ├── bootstrap/   petit stub distribué aux joueurs, AUCUN code GPL
+│                → propriétaire, All Rights Reserved (voir bootstrap/LICENSE)
 └── launcher/    l'application complète, licence GPL-3.0 (voir launcher/LICENSE)
 ```
 
-**Pourquoi cette séparation** : `launcher` embarque FlowUpdater et
-OpenLauncherLib (installation/lancement de Minecraft), tous deux confirmés
-**GPL-3.0** (pas "dual GPL/LGPL" comme je l'avais cru au début — vérifié en
-lisant leurs vrais fichiers LICENSE). `bootstrap` ne doit jamais dépendre de
-`launcher` ni embarquer une lib GPL : à l'exécution, il télécharge le jar
-complet du launcher (déjà buildé avec ses dépendances GPL) depuis le site, le
-lance comme nouveau processus, puis se termine immédiatement — jamais deux
-JVM actives en même temps. `common` existe uniquement parce que `bootstrap`
-et `launcher` doivent absolument être d'accord sur l'emplacement des dossiers
-de données (sinon le hand-off entre les deux casse).
+**Pourquoi cette séparation** : `launcher` embarque FlowUpdater,
+OpenLauncherLib, et la dépendance transitive de FlowUpdater
+`flowmultitools` (installation/lancement de Minecraft), tous les trois
+confirmés **GPL-3.0** (pas "dual GPL/LGPL" comme je l'avais cru au début —
+vérifié en lisant leurs vrais fichiers LICENSE/pom). `bootstrap` ne doit
+jamais dépendre de `launcher` ni embarquer une lib GPL : à l'exécution, il
+télécharge le jar complet du launcher (déjà buildé avec ses dépendances GPL)
+depuis le site, le lance comme nouveau processus, puis se termine
+immédiatement — jamais deux JVM actives en même temps. `common` existe
+uniquement parce que `bootstrap` et `launcher` doivent absolument être
+d'accord sur l'emplacement des dossiers de données (sinon le hand-off entre
+les deux casse).
+
+**Décision de licence finale (prise explicitement par l'utilisateur)** :
+- `launcher` reste GPL-3.0 — remplacer FlowUpdater/OpenLauncherLib pour
+  sortir de la GPL a été jugé disproportionné (le pipeline "processors" de
+  l'installeur Forge/NeoForge à lui seul serait des semaines de travail),
+  et l'alternative "le bootstrap télécharge les dépendances GPL depuis
+  Maven Central à la volée + les lie via `-cp`" a été explicitement écartée
+  après analyse (n'aurait probablement pas évité l'obligation GPL selon la
+  position habituelle de la FSF, en plus de complexifier `BootstrapMain`
+  pour rien).
+- `common` est GPL-3.0 lui aussi : pas parce qu'il dépend de code GPL (il
+  n'en dépend pas), mais parce qu'une copie compilée de son code se
+  retrouve embarquée dans le jar combiné `launcher`, dont le Corresponding
+  Source (obligatoire pour tout destinataire du jar GPL) inclut de fait
+  `common`.
+- `bootstrap` reste propriétaire (All Rights Reserved, Snake N3st) : il ne
+  combine jamais de code GPL (aucune dépendance vers FlowUpdater/
+  OpenLauncherLib), donc aucune obligation de copyleft ne s'applique à lui
+  — même s'il dépend de `common`, qui est GPL. La raison : `common` est du
+  code entièrement écrit par l'utilisateur (copyright détenu à 100%), et un
+  auteur peut toujours réutiliser son propre code sous des licences
+  différentes selon le produit dans lequel il l'intègre (dual-licensing) —
+  contrairement à FlowUpdater/OpenLauncherLib, dont l'utilisateur n'est pas
+  l'auteur et dont les conditions GPL s'imposent telles quelles.
+- Les plugins Azuriom (`SnakeN3stLogin/site-plugin`) restent privés sans
+  problème : ils tournent côté serveur et communiquent par HTTP, jamais
+  liés/compilés dans le launcher, donc totalement hors du périmètre GPL.
+- Conséquence pratique de "launcher/common publics" : le repo est
+  maintenant public sur GitHub (voir section 1), et l'appli elle-même
+  pointe vers ce dépôt et liste les licences tierces embarquées depuis
+  Paramètres > "A propos" (`ui.about.LicensesDialog`) — voir
+  `ui/about/README.md` et `THIRD-PARTY-NOTICES.md`.
 
 ### Dossiers de données (`util.AppDirs`)
 
@@ -797,7 +835,9 @@ le serveur local n'est pas up sur une autre machine.
   l'utilisateur (autres fenêtres, onglets de navigateur, conversations) a été
   capturé par erreur. Toujours cibler/découper précisément la fenêtre de
   l'application testée.
-- Ne jamais committer sans demande explicite (rien n'est commité à ce jour).
+- Ne jamais committer/pousser sans demande explicite (le repo est déjà
+  commité/poussé sur GitHub par l'utilisateur lui-même — ça ne change pas
+  la règle pour les futures modifications).
 - L'utilisateur écrit parfois avec des soucis d'encodage (é/è/à remplacés par
   des chiffres comme "2"/"3") — c'est un problème de saisie, pas une
   préférence linguistique ; comprendre le message malgré ça.

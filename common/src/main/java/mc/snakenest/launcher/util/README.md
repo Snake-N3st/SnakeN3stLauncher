@@ -36,3 +36,19 @@ Nothing here talks to the network, to Swing, or to any third-party library.
   `logs/`, plus console output. **Never log a private key seed, a signature,
   or a URL with a query string** (the API's query strings carry
   `signature`/`publicKey`) — log the request path only.
+
+- **`ClientIds`** — resolves `sn3.clientId`: the JVM system property if set
+  (valid, non-blank), otherwise a `.clientId` file bundled as a classpath
+  resource (`resolve(null)`/`resolve("")` both fall through to it). Lets an
+  operator ship a turnkey single-client build of `bootstrap`/`launcher` -
+  drop a `.clientId` file under this module's own `src/main/resources/`
+  before running `mvn package` (it gets shaded into *both* final jars
+  automatically, since both already bundle `common`'s classes/resources)
+  and neither jar needs a `-Dsn3.clientId=...` argument at all anymore.
+  **Never commit a real one** - this repo is public/GPL-3.0, and a real
+  client id identifies a specific deployment; `.gitignore` already excludes
+  `**/src/main/resources/.clientId` for exactly this reason. Validates the
+  resolved value against the shape the site actually issues
+  (`LauncherClient::boot()` server-side, Laravel's `Str::random(32)`: 32
+  alphanumeric characters) with some slack on length, as a sanity check
+  against an empty/corrupted file rather than strict format enforcement.

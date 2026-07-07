@@ -6,13 +6,15 @@ plan's "Deux artefacts, un seul JVM actif à la fois" for why this split
 exists.
 
 - **`BootstrapMain`** — the only entry point. Reads `sn3.baseUrl`/
-  `sn3.clientId` (same JVM properties `launcher.Main` reads - required,
-  exits with an error if `clientId` is missing), fetches the latest release
-  info, downloads it if not already cached under `AppDirs#cacheLauncher()`
-  (skips the download entirely if a jar matching the announced SHA-256 is
-  already there), spawns `java -jar <cached-jar>` with the same two
-  properties forwarded, then **exits immediately** - never two JVMs running
-  at once.
+  `sn3.clientId` (same JVM properties `launcher.Main` reads), fetches the
+  latest release info, downloads it if not already cached under
+  `AppDirs#cacheLauncher()` (skips the download entirely if a jar matching
+  the announced SHA-256 is already there), spawns `java -jar <cached-jar>`
+  with the same two properties forwarded, then **exits immediately** -
+  never two JVMs running at once. `clientId` itself goes through
+  `common.util.ClientIds#resolve` first (JVM property, falling back to a
+  bundled `.clientId` classpath resource) - exits with an error only if
+  neither source resolves to something valid.
 
 - **`LauncherReleaseClient`** — talks to `GET /api/launcher-auth/releases/latest`
   and `GET /api/launcher-auth/releases/{version}/download` directly via

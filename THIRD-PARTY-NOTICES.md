@@ -22,7 +22,11 @@ license (see each module's own `LICENSE` file):
 
 Full license texts for every dependency listed below are bundled inside the
 `launcher` jar under `licenses/` (`src/main/resources/licenses/`), viewable
-from the launcher's "A propos" screen.
+from Parametres > A propos > "Voir les licences tierces"
+(`ui.about.LicensesDialog`). That same section also links to this
+repository's public source (https://github.com/Snake-N3st/SnakeN3stLauncher),
+so a recipient of the GPL-3.0 `launcher` jar has an easy way to find its
+Corresponding Source from inside the app itself.
 
 ## Dependencies of `launcher`
 
