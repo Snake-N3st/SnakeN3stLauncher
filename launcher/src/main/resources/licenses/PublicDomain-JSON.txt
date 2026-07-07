@@ -1,0 +1,6 @@
+Public Domain.
+
+(As declared in the LICENSE file of org.json:json 20240303,
+https://github.com/douglascrockford/JSON-java - superseding this
+project's older "JSON License" text, which included a "Software shall
+be used for Good, not Evil" clause not present in this release.)
