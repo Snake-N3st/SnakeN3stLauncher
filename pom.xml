@@ -10,11 +10,18 @@
     <packaging>pom</packaging>
 
     <!--
-        Two independently-distributed artifacts:
-        - bootstrap: tiny, rarely-updated stub. No GPL dependencies. Downloads and
-          runs the latest "launcher" jar published on the site.
+        Two independently-distributed artifacts, each under its own license
+        (see each module's own LICENSE file):
+        - bootstrap: tiny, rarely-updated stub. No GPL dependencies, proprietary
+          (All Rights Reserved). Downloads and runs the latest "launcher" jar
+          published on the site.
         - launcher: the complete application. Embeds FlowUpdater/OpenLauncherLib
-          (GPL-3.0), see launcher/LICENSE.
+          (GPL-3.0), so the whole jar is GPL-3.0.
+        - common: shared utilities used by both. GPL-3.0, since a compiled copy
+          of it ends up embedded in launcher's GPL binary - but that doesn't
+          force bootstrap (which never combines with GPL code) to be GPL too,
+          since the copyright holder of common is free to license the same
+          original source differently per product.
         Kept as a single reactor so both build with one `mvn package`, but each
         module's pom controls its own dependencies/packaging independently.
     -->

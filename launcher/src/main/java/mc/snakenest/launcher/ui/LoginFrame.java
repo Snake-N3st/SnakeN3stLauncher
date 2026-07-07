@@ -3,6 +3,7 @@ package mc.snakenest.launcher.ui;
 import mc.snakenest.launcher.auth.DeviceAuthListener;
 import mc.snakenest.launcher.auth.DeviceAuthService;
 import mc.snakenest.launcher.auth.DeviceAuthState;
+import mc.snakenest.launcher.ui.common.Colors;
 
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -16,7 +17,6 @@ import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 import javax.swing.border.EmptyBorder;
 import java.awt.BorderLayout;
-import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.Font;
@@ -124,7 +124,7 @@ public final class LoginFrame extends JFrame {
             @Override
             public void onStateChanged(DeviceAuthState state) {
                 SwingUtilities.invokeLater(() -> {
-                    statusLabel.setForeground(state == DeviceAuthState.FAILED ? dangerColor() : UIManager.getColor("Label.foreground"));
+                    statusLabel.setForeground(state == DeviceAuthState.FAILED ? Colors.danger() : UIManager.getColor("Label.foreground"));
                     statusLabel.setText(describe(state));
                     progressBar.setVisible(isBusy(state));
                     if (state == DeviceAuthState.FAILED || state == DeviceAuthState.CANCELLED) {
@@ -151,7 +151,7 @@ public final class LoginFrame extends JFrame {
             @Override
             public void onFailed(String reasonMessage) {
                 SwingUtilities.invokeLater(() -> {
-                    statusLabel.setForeground(dangerColor());
+                    statusLabel.setForeground(Colors.danger());
                     statusLabel.setText(reasonMessage);
                 });
             }
@@ -164,20 +164,15 @@ public final class LoginFrame extends JFrame {
                 || state == DeviceAuthState.POLLING;
     }
 
-    private Color dangerColor() {
-        Color color = UIManager.getColor("Component.error.focusedBorderColor");
-        return color != null ? color : Color.RED.darker();
-    }
-
     private String describe(DeviceAuthState state) {
         return switch (state) {
             case IDLE -> " ";
             case REQUESTING_CHALLENGE -> "Demande de connexion en cours...";
             case AWAITING_USER_CONFIRMATION -> "Confirme la connexion dans ton navigateur...";
             case POLLING -> "En attente de confirmation...";
-            case SUCCEEDED -> "Connecte !";
-            case FAILED -> "Echec de la connexion.";
-            case CANCELLED -> "Connexion annulee.";
+            case SUCCEEDED -> "Connecté !";
+            case FAILED -> "Échec de la connexion.";
+            case CANCELLED -> "Connexion annulée.";
         };
     }
 }

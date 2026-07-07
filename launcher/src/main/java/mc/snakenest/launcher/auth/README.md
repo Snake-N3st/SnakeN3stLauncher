@@ -11,7 +11,11 @@ private key.
   client's name/logo, unsigned - used to brand the login window before any
   session exists), `fetchUsername` (used on its own right before launching
   a game, to detect a username change - see `LauncherApp#warnIfUsernameChanged`),
-  and `fetchPlayerInfo` (username+role+email+avatar in one signed call).
+  `fetchPlayerInfo` (username+role+email+avatar in one signed call), and
+  `revokeKey` (deletes the caller's own key server-side - called by
+  `LauncherApp#logout` before the local key file is deleted, so a key that
+  leaked before logout - e.g. copied off disk - doesn't stay valid forever;
+  best-effort, a failure here never blocks logging out locally).
 
   `fetchPlayerInfo` used to be three separate calls
   (`fetchRole`/`fetchEmail` alongside `fetchUsername`), each re-signed and
@@ -22,8 +26,13 @@ private key.
   time the user clicks the account icon.
 
 - **`ClientInfo`** — the `fetchClientInfo` result (`name`, nullable `image`
-  URL). Decoding that URL into an actual image is `ui.common.RemoteImages`'
-  job, not this package's - `ClientInfo` only carries the raw API response.
+  URL, nullable `discordAppId`). Decoding the image URL into an actual
+  image is `ui.common.RemoteImages`' job, not this package's - `ClientInfo`
+  only carries the raw API response. `discordAppId` is `null` unless the
+  server operator configured a Discord Rich Presence application ID for
+  this client in `/admin/launcher-auth` - `LauncherApp` passes it straight
+  to `discord.DiscordPresenceService#forAppId`, which itself returns `null`
+  right back if it's absent (Discord is simply never touched in that case).
 
 - **`PlayerInfo`** — the `fetchPlayerInfo` result (`username`, `role`,
   `email`, nullable `avatar` URL). Same split as `ClientInfo`: this record

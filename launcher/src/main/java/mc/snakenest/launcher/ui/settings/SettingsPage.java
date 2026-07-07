@@ -4,6 +4,7 @@ import mc.snakenest.launcher.config.Theme;
 
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JRadioButton;
@@ -15,10 +16,11 @@ import java.awt.FlowLayout;
 import java.awt.Font;
 import java.util.function.Consumer;
 
-/** Theme toggle, data folder shortcut, logout - see mockups for the general "settings-ish" tone. */
+/** Theme toggle, Discord status toggle, data folder shortcut, logout - see mockups for the general "settings-ish" tone. */
 public final class SettingsPage extends JPanel {
 
-    public SettingsPage(Theme currentTheme, Consumer<Theme> onThemeChanged, Runnable onOpenDataFolder, Runnable onLogout) {
+    public SettingsPage(Theme currentTheme, Consumer<Theme> onThemeChanged, boolean discordEnabled, Consumer<Boolean> onDiscordToggled,
+                         Runnable onOpenDataFolder, Runnable onLogout) {
         setLayout(new BorderLayout());
         setBorder(new EmptyBorder(24, 24, 24, 24));
 
@@ -29,17 +31,20 @@ public final class SettingsPage extends JPanel {
         content.add(section("Apparence", themeRow(currentTheme, onThemeChanged)));
         content.add(javax.swing.Box.createVerticalStrut(24));
 
+        content.add(section("Discord", discordRow(discordEnabled, onDiscordToggled)));
+        content.add(javax.swing.Box.createVerticalStrut(24));
+
         JPanel dataFolderRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         dataFolderRow.setOpaque(false);
-        JButton openFolder = new JButton("Ouvrir le dossier de donnees");
+        JButton openFolder = new JButton("Ouvrir le dossier de données");
         openFolder.addActionListener(e -> onOpenDataFolder.run());
         dataFolderRow.add(openFolder);
-        content.add(section("Donnees", dataFolderRow));
+        content.add(section("Données", dataFolderRow));
         content.add(javax.swing.Box.createVerticalStrut(24));
 
         JPanel logoutRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         logoutRow.setOpaque(false);
-        JButton logout = new JButton("Se deconnecter");
+        JButton logout = new JButton("Se déconnecter");
         logout.addActionListener(e -> onLogout.run());
         logoutRow.add(logout);
         content.add(section("Compte", logoutRow));
@@ -80,6 +85,16 @@ public final class SettingsPage extends JPanel {
 
         row.add(light);
         row.add(dark);
+        return row;
+    }
+
+    private JPanel discordRow(boolean discordEnabled, Consumer<Boolean> onDiscordToggled) {
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        row.setOpaque(false);
+
+        JCheckBox checkbox = new JCheckBox("Afficher mon statut sur Discord", discordEnabled);
+        checkbox.addActionListener(e -> onDiscordToggled.accept(checkbox.isSelected()));
+        row.add(checkbox);
         return row;
     }
 }

@@ -23,6 +23,7 @@ import javax.swing.JOptionPane;
 import javax.swing.SwingUtilities;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -44,12 +45,15 @@ public final class FullShellPreview {
     private static void buildAndShow(ThemeController themeController) {
         LauncherFrame frame = new LauncherFrame(
                 anchor -> AccountPopover.show(anchor, "JoueurDeTest", "Admin", "joueur@example.com", null,
+                        () -> System.out.println("[preview] would open the profile page"),
                         () -> System.out.println("[preview] would log out"))
         );
 
         frame.addPage(NavTarget.SETTINGS, new SettingsPage(
                 themeController.current(),
                 themeController::switchTo,
+                true,
+                enabled -> System.out.println("[preview] would " + (enabled ? "enable" : "disable") + " Discord status"),
                 () -> System.out.println("[preview] would open data folder"),
                 () -> System.out.println("[preview] would log out")
         ));
@@ -68,11 +72,22 @@ public final class FullShellPreview {
         // A one-element holder breaks the construction cycle: the list page's callback needs a
         // reference to the section it's about to be placed inside of.
         ModpackSectionPage[] sectionHolder = new ModpackSectionPage[1];
-        ModpackListPage listPage = new ModpackListPage(new ModpackListViewModel(modpacks, Set.of("aventure-ultime"),
+        ModpackListPage listPage = new ModpackListPage(new ModpackListViewModel(modpacks, Set.of("aventure-ultime"), Set.of("aventure-ultime"), Map.of(),
                 modpack -> showDetail(frame, sectionHolder[0], modpack),
-                modpack -> System.out.println("[preview] would quick install/launch " + modpack.slug())));
+                modpack -> System.out.println("[preview] would quick install/launch " + modpack.slug()),
+                () -> System.out.println("[preview] would cancel the in-flight quick action"),
+                () -> System.out.println("[preview] would stop the quick-launched game")));
         sectionHolder[0] = new ModpackSectionPage(listPage);
         frame.addPage(NavTarget.MODPACKS, sectionHolder[0]);
+
+        // Demonstrates the topbar's "Actualiser" button and its per-page rebinding - see
+        // LauncherFrame#setOnNavigate's Javadoc for why real navigation (not sub-navigation
+        // within a section) is what drives it.
+        frame.setOnNavigate(target -> frame.setOnRefresh(switch (target) {
+            case MODPACKS -> () -> System.out.println("[preview] would reload the modpack list");
+            case NEWS -> () -> System.out.println("[preview] would reload the news list");
+            case SETTINGS -> null;
+        }));
 
         frame.navigateTo(NavTarget.MODPACKS);
         frame.setVisible(true);
@@ -90,11 +105,14 @@ public final class FullShellPreview {
                 modpack.totalSize(),
                 126,
                 modpack.slug().equals("aventure-ultime"),
+                modpack.slug().equals("aventure-ultime"),
                 null,
                 ModpackSettings.defaults(),
                 () -> System.out.println("[preview] would install/launch " + modpack.slug()),
                 () -> System.out.println("[preview] would repair " + modpack.slug()),
                 () -> System.out.println("[preview] would uninstall " + modpack.slug()),
+                () -> System.out.println("[preview] would cancel the install for " + modpack.slug()),
+                () -> System.out.println("[preview] would stop the running game for " + modpack.slug()),
                 newSettings -> System.out.println("[preview] would save settings " + newSettings),
                 () -> System.out.println("[preview] would open the instance folder"),
                 back

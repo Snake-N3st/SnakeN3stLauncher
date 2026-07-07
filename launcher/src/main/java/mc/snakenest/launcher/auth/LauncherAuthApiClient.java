@@ -82,6 +82,22 @@ public final class LauncherAuthApiClient {
         return fetchOne("/api/launcher-auth/player/info", session, PlayerInfo.class);
     }
 
+    /**
+     * Deletes this key server-side, so a copy that leaked before logout (e.g. exfiltrated from
+     * disk) stops being accepted afterward. Called by {@code LauncherApp#logout} before the
+     * local key file is deleted - best-effort (a failure here shouldn't block logging out
+     * locally), but always attempted, since skipping it would leave a stolen key valid forever.
+     */
+    public void revokeKey(PlayerSession session) throws IOException, InterruptedException, LauncherApiException {
+        SignedParams signed = SignedRequestSigner.sign(session);
+        URI uri = Uris.withQuery(baseUrl.resolve("/api/launcher-auth/player/revoke"), signed.toQueryParams());
+        JsonResponse response = http.postJson(uri, Map.of());
+
+        if (!response.isSuccess()) {
+            throw new LauncherApiException("Key revocation rejected (status " + response.statusCode() + ")");
+        }
+    }
+
     private <T> T fetchOne(String path, PlayerSession session, Class<T> type)
             throws IOException, InterruptedException, LauncherApiException {
         SignedParams signed = SignedRequestSigner.sign(session);

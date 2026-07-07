@@ -7,7 +7,7 @@ import java.awt.BorderLayout;
 import java.awt.CardLayout;
 
 /**
- * The whole "Actualites" section registered under {@code NavTarget.NEWS}:
+ * The whole "Actualités" section registered under {@code NavTarget.NEWS}:
  * a small internal {@link CardLayout} between the list and one post's full
  * content, mirroring {@code ui.modpack.ModpackSectionPage} (including
  * implementing {@link Resettable} for the same reason - see its Javadoc).

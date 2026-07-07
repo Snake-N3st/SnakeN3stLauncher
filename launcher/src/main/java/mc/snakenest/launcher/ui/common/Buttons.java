@@ -35,7 +35,7 @@ public final class Buttons {
         button.setFocusPainted(false);
         button.putClientProperty("JButton.buttonType", "roundRect");
         // Deliberately generous - these sat noticeably smaller than the primary action
-        // button next to them (e.g. modpack detail page's "Demarrer") with the old 6px margin.
+        // button next to them (e.g. modpack detail page's "Démarrer") with the old 6px margin.
         button.setMargin(new java.awt.Insets(11, 11, 11, 11));
         button.addActionListener(e -> onClick.run());
         return button;

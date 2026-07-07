@@ -19,8 +19,24 @@
         specifically because bootstrap and launcher must agree on exactly
         where the cache/data directories are - two independent
         implementations of that logic would drift and break the handoff
-        between them. No GPL, no third-party dependency of any kind.
+        between them. No third-party dependency of any kind.
+
+        Licensed GPL-3.0 (see LICENSE) - not because this module depends on
+        any GPL code itself (it doesn't), but because a compiled copy of it
+        ends up embedded in "launcher"'s combined GPL binary, whose
+        Corresponding Source must be available under GPL-compatible terms.
+        "bootstrap" also depends on this module but never combines with
+        GPL code, so it keeps its own separate, proprietary license (see
+        bootstrap/LICENSE) - reusing the same source in a non-GPL-combined
+        product is fine since the copyright holder is the same for both.
     -->
+
+    <licenses>
+        <license>
+            <name>GNU General Public License v3.0</name>
+            <url>https://www.gnu.org/licenses/gpl-3.0.txt</url>
+        </license>
+    </licenses>
 
     <dependencies>
         <dependency>

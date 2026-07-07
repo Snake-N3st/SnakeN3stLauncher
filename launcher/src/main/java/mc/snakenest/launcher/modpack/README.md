@@ -54,6 +54,15 @@ string or path alone (two versions sharing a file never re-download it).
   see `IOException`/`ModpackApiException`/`InterruptedException`, same as
   before parallelizing.
 
+  **Cancellation** ("Annuler" in `ui.modpack.ModpackDetailPage`) is
+  cooperative, not this class's own mechanism: `LauncherApp` runs
+  `sync`/install/launch inside a `Future` it can `cancel(true)`, which
+  interrupts the worker thread. `awaitAll` already rethrows
+  `InterruptedException` as-is when that's what caused a download to fail,
+  so an interrupted sync surfaces the same way a genuine I/O failure would
+  - `LauncherApp` is what tells the two apart (`isCancellation`) and shows
+  "Annule." instead of an error message.
+
 - **`InstancePaths`** — every manifest `path` is server-supplied and used
   to build a filesystem path; this resolves it defensively (normalize +
   verify it's still under the instance directory) before any write/delete,

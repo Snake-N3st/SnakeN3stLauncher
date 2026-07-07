@@ -21,6 +21,9 @@ public final class LauncherConfig {
      */
     private Long playerId;
 
+    /** Whether to connect to the local Discord client and show Rich Presence. Default on. */
+    private boolean discordEnabled = true;
+
     public Theme theme() {
         return theme;
     }
@@ -35,5 +38,13 @@ public final class LauncherConfig {
 
     public void setPlayerId(Long playerId) {
         this.playerId = playerId;
+    }
+
+    public boolean discordEnabled() {
+        return discordEnabled;
+    }
+
+    public void setDiscordEnabled(boolean discordEnabled) {
+        this.discordEnabled = discordEnabled;
     }
 }

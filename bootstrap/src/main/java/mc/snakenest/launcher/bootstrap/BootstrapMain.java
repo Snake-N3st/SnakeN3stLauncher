@@ -41,18 +41,28 @@ public final class BootstrapMain {
         String baseUrlProperty = System.getProperty("sn3.baseUrl", DEFAULT_BASE_URL);
         URI baseUrl = URI.create(baseUrlProperty);
 
+        // Nice-to-have only: showIfPossible() already degrades to null in a headless
+        // environment, and every use below is null-checked - a display-less test/CI run must
+        // behave exactly as it did before this was added.
+        BootstrapSplash splash = BootstrapSplash.showIfPossible();
+
         try {
-            Path jar = ensureLatestLauncherJar(dirs, baseUrl, clientId);
+            Path jar = ensureLatestLauncherJar(dirs, baseUrl, clientId, splash);
+            setStatus(splash, "Démarrage du launcher...");
             Process process = spawnLauncher(jar, baseUrlProperty, clientId);
             Log.info(BootstrapMain.class, "Launched " + jar.getFileName() + " (pid " + process.pid() + "), bootstrap exiting.");
+            close(splash);
         } catch (Exception e) {
             Log.error(BootstrapMain.class, "Bootstrap failed", e);
             System.err.println("Could not start the launcher: " + e.getMessage());
+            close(splash);
+            BootstrapSplash.showFatalError("Impossible de démarrer le launcher : " + e.getMessage());
             System.exit(1);
         }
     }
 
-    private static Path ensureLatestLauncherJar(AppDirs dirs, URI baseUrl, String clientId) throws Exception {
+    private static Path ensureLatestLauncherJar(AppDirs dirs, URI baseUrl, String clientId, BootstrapSplash splash) throws Exception {
+        setStatus(splash, "Vérification de la dernière version...");
         LauncherReleaseClient releaseClient = new LauncherReleaseClient(baseUrl, clientId);
         LauncherReleaseInfo latest = releaseClient.fetchLatest();
 
@@ -62,9 +72,22 @@ public final class BootstrapMain {
             return target;
         }
 
+        setStatus(splash, "Téléchargement de la version " + latest.version() + "...");
         Log.info(BootstrapMain.class, "Downloading launcher " + latest.version() + "...");
         releaseClient.download(latest, target);
         return target;
+    }
+
+    private static void setStatus(BootstrapSplash splash, String status) {
+        if (splash != null) {
+            splash.setStatus(status);
+        }
+    }
+
+    private static void close(BootstrapSplash splash) {
+        if (splash != null) {
+            splash.close();
+        }
     }
 
     private static boolean isValidCachedJar(Path target, LauncherReleaseInfo latest) {

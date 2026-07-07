@@ -16,10 +16,12 @@ import java.awt.image.BufferedImage;
 
 /**
  * Small popover opened from the top bar's account button: who's logged in,
- * and a logout action. Purely a view - the username/role/email/avatar it
- * shows are already-fetched data handed in by the caller ({@code
- * LauncherApp}), never fetched here; this popover must never trigger a
- * network call just from being opened (see {@code ui/README.md}).
+ * a "Gérer le profil" action (opens the account's profile page on the site
+ * in the default browser), and a logout action. Purely a view - the
+ * username/role/email/avatar it shows are already-fetched data handed in by
+ * the caller ({@code LauncherApp}), never fetched here; this popover must
+ * never trigger a network call just from being opened (see
+ * {@code ui/README.md}).
  */
 public final class AccountPopover {
 
@@ -28,7 +30,8 @@ public final class AccountPopover {
     private AccountPopover() {
     }
 
-    public static void show(Component invoker, String username, String role, String email, BufferedImage avatar, Runnable onLogout) {
+    public static void show(Component invoker, String username, String role, String email, BufferedImage avatar,
+                             Runnable onManageProfile, Runnable onLogout) {
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBorder(new EmptyBorder(12, 16, 12, 16));
@@ -69,18 +72,41 @@ public final class AccountPopover {
         popup.setLayout(new java.awt.BorderLayout());
         popup.add(panel, java.awt.BorderLayout.NORTH);
 
-        JButton logoutButton = new JButton("Se deconnecter");
+        JButton manageButton = new JButton("Gérer le profil");
+        manageButton.setAlignmentX(Component.LEFT_ALIGNMENT);
+        manageButton.addActionListener(e -> {
+            popup.setVisible(false);
+            onManageProfile.run();
+        });
+
+        JButton logoutButton = new JButton("Se déconnecter");
         logoutButton.setAlignmentX(Component.LEFT_ALIGNMENT);
         logoutButton.addActionListener(e -> {
             popup.setVisible(false);
             onLogout.run();
         });
-        JPanel logoutWrapper = new JPanel();
-        logoutWrapper.setLayout(new BoxLayout(logoutWrapper, BoxLayout.Y_AXIS));
-        logoutWrapper.setBorder(new EmptyBorder(0, 16, 12, 16));
-        logoutWrapper.add(logoutButton);
-        popup.add(logoutWrapper, java.awt.BorderLayout.SOUTH);
+
+        // Each JButton otherwise sizes itself to its own text ("Gérer le profil" vs "Se
+        // déconnecter" aren't the same length) - match them to the wider of the two so the pair
+        // reads as a deliberate, aligned button group instead of two mismatched widths.
+        int buttonWidth = Math.max(manageButton.getPreferredSize().width, logoutButton.getPreferredSize().width);
+        matchWidth(manageButton, buttonWidth);
+        matchWidth(logoutButton, buttonWidth);
+
+        JPanel actionsWrapper = new JPanel();
+        actionsWrapper.setLayout(new BoxLayout(actionsWrapper, BoxLayout.Y_AXIS));
+        actionsWrapper.setBorder(new EmptyBorder(0, 16, 12, 16));
+        actionsWrapper.add(manageButton);
+        actionsWrapper.add(javax.swing.Box.createVerticalStrut(6));
+        actionsWrapper.add(logoutButton);
+        popup.add(actionsWrapper, java.awt.BorderLayout.SOUTH);
 
         popup.show(invoker, -popup.getPreferredSize().width + invoker.getWidth(), invoker.getHeight());
+    }
+
+    private static void matchWidth(JButton button, int width) {
+        java.awt.Dimension size = new java.awt.Dimension(width, button.getPreferredSize().height);
+        button.setPreferredSize(size);
+        button.setMaximumSize(size);
     }
 }

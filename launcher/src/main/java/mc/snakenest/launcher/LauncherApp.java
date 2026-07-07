@@ -6,8 +6,10 @@ import mc.snakenest.launcher.auth.LauncherAuthApiClient;
 import mc.snakenest.launcher.auth.PlayerInfo;
 import mc.snakenest.launcher.auth.PlayerSession;
 import mc.snakenest.launcher.config.ConfigStore;
+import mc.snakenest.launcher.config.LauncherConfig;
 import mc.snakenest.launcher.crypto.Ed25519KeyPair;
 import mc.snakenest.launcher.crypto.KeyStorage;
+import mc.snakenest.launcher.discord.DiscordPresenceService;
 import mc.snakenest.launcher.game.GameInstallListener;
 import mc.snakenest.launcher.game.GameInstallService;
 import mc.snakenest.launcher.game.GameLaunchService;
@@ -15,12 +17,14 @@ import mc.snakenest.launcher.game.InstallRequest;
 import mc.snakenest.launcher.game.InstallStep;
 import mc.snakenest.launcher.game.LaunchRequest;
 import mc.snakenest.launcher.game.OfflineUuids;
+import mc.snakenest.launcher.modpack.LocalManifestStore;
 import mc.snakenest.launcher.modpack.ModpackApiClient;
 import mc.snakenest.launcher.modpack.ModpackManifest;
 import mc.snakenest.launcher.modpack.ModpackSettings;
 import mc.snakenest.launcher.modpack.ModpackSettingsStore;
 import mc.snakenest.launcher.modpack.ModpackSummary;
 import mc.snakenest.launcher.modpack.ModpackSyncEngine;
+import mc.snakenest.launcher.modpack.StoredManifest;
 import mc.snakenest.launcher.news.NewsApiClient;
 import mc.snakenest.launcher.news.Post;
 import mc.snakenest.launcher.ui.LauncherFrame;
@@ -86,6 +90,18 @@ final class LauncherApp {
     private PlayerInfo playerInfo;
     private BufferedImage playerAvatar;
     private LauncherFrame shellFrame;
+    // Whichever sync/install task is currently running for the open detail page - a single slot
+    // is enough since only one can be in flight at a time (the button that would start another is
+    // itself busy/disabled-by-state while one is running).
+    private volatile java.util.concurrent.Future<?> currentInstallTask;
+    private volatile Process runningGameProcess;
+    // The list currently shown, if any - lets card-state pushes (setCardBusy/Running/Installed)
+    // reach the right ModpackCardView regardless of whether that modpack's detail page is also
+    // open. Replaced wholesale on every (re)load, same "stale reference is a harmless no-op"
+    // reasoning as currentDetailPage below.
+    private volatile ModpackListViewModel currentListViewModel;
+    // null whenever this client has no discord_app_id configured - Discord is then never touched at all.
+    private volatile DiscordPresenceService discordPresence;
 
     LauncherApp(AppDirs dirs, URI baseUrl, String clientId, ConfigStore configStore, ThemeController themeController,
                 LauncherAuthApiClient authApi, ModpackApiClient modpackApi, NewsApiClient newsApi, KeyStorage keyStorage,
@@ -102,6 +118,15 @@ final class LauncherApp {
         this.gameInstallService = gameInstallService;
         this.gameLaunchService = gameLaunchService;
         this.modpackSettingsStore = new ModpackSettingsStore(dirs);
+
+        // Covers every exit path (window close, System.exit, Ctrl+C), not just an explicit
+        // logout - Discord Rich Presence should disappear whenever the launcher actually quits.
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            DiscordPresenceService presence = discordPresence;
+            if (presence != null) {
+                presence.close();
+            }
+        }, "discord-presence-shutdown"));
     }
 
     /**
@@ -136,23 +161,81 @@ final class LauncherApp {
         }
     }
 
-    /** Best-effort; leaves {@link #clientInfo}/{@link #clientLogo} {@code null} on any failure. */
+    // A slow/unresponsive server must not leave the launcher showing no window at all for as
+    // long as HttpJsonClient's own (much longer, 30s) request timeout - bounding these two
+    // startup calls keeps the worst case short, at the cost of a placeholder logo/no cached
+    // player info if the server really is that slow (both already degrade gracefully).
+    private static final java.time.Duration STARTUP_FETCH_TIMEOUT = java.time.Duration.ofSeconds(4);
+
+    /** Best-effort; leaves {@link #clientInfo}/{@link #clientLogo} {@code null} on any failure or timeout. */
     private void fetchClientBrandingBlocking() {
         try {
-            clientInfo = authApi.fetchClientInfo(clientId);
+            clientInfo = runWithTimeout(() -> authApi.fetchClientInfo(clientId));
             clientLogo = RemoteImages.tryLoad(clientInfo.image());
+            connectDiscordPresence();
         } catch (Exception e) {
             Log.warn(LauncherApp.class, "Could not fetch client branding: " + e.getMessage());
         }
     }
 
-    /** Best-effort; leaves {@link #playerInfo}/{@link #playerAvatar} {@code null} on any failure. */
+    /**
+     * Fire-and-forget: whether/how fast Discord connects must never affect the startup
+     * timeline (see {@link #STARTUP_FETCH_TIMEOUT}'s Javadoc for the same reasoning applied to
+     * the branding/player-info fetches) - this isn't even inside that bound.
+     *
+     * <p>Also the re-entry point when the player flips the Settings toggle back on (see
+     * {@link #setDiscordEnabled}) - re-checks {@link LauncherConfig#discordEnabled()} itself so
+     * both callers share one gate instead of duplicating the check.
+     */
+    private void connectDiscordPresence() {
+        if (!configStore.load().discordEnabled()) {
+            return;
+        }
+        DiscordPresenceService presence = clientInfo != null ? DiscordPresenceService.forAppId(clientInfo.discordAppId()) : null;
+        if (presence == null) {
+            return;
+        }
+        discordPresence = presence;
+        backgroundExecutor.execute(() -> {
+            presence.connect();
+            presence.setBrowsing();
+        });
+    }
+
+    /** The Settings page's "Afficher mon statut sur Discord" checkbox. */
+    private void setDiscordEnabled(boolean enabled) {
+        var config = configStore.load();
+        config.setDiscordEnabled(enabled);
+        configStore.save(config);
+
+        if (enabled) {
+            connectDiscordPresence();
+            return;
+        }
+        DiscordPresenceService presence = discordPresence;
+        discordPresence = null;
+        if (presence != null) {
+            backgroundExecutor.execute(presence::close);
+        }
+    }
+
+    /** Best-effort; leaves {@link #playerInfo}/{@link #playerAvatar} {@code null} on any failure or timeout. */
     private void fetchPlayerInfoBlocking() {
         try {
-            playerInfo = authApi.fetchPlayerInfo(session);
+            playerInfo = runWithTimeout(() -> authApi.fetchPlayerInfo(session));
             playerAvatar = RemoteImages.tryLoad(playerInfo.avatar());
         } catch (Exception e) {
             Log.warn(LauncherApp.class, "Could not fetch player info: " + e.getMessage());
+        }
+    }
+
+    private <T> T runWithTimeout(java.util.concurrent.Callable<T> task) throws Exception {
+        java.util.concurrent.Future<T> future = backgroundExecutor.submit(task);
+        try {
+            return future.get(STARTUP_FETCH_TIMEOUT.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            future.cancel(true);
+            throw new java.io.IOException("Timed out after " + STARTUP_FETCH_TIMEOUT, e);
         }
     }
 
@@ -187,15 +270,30 @@ final class LauncherApp {
         LauncherFrame frame = new LauncherFrame(this::showAccountPopover);
         this.shellFrame = frame;
 
+        NewsSectionPage newsSection = buildNewsSection(frame);
+        ModpackSectionPage modpackSection = buildModpackSection(frame);
+
         frame.addPage(NavTarget.SETTINGS, new SettingsPage(
                 themeController.current(),
                 themeController::switchTo,
+                configStore.load().discordEnabled(),
+                this::setDiscordEnabled,
                 () -> openFolder(dirs.root()),
                 this::logout
         ));
+        frame.addPage(NavTarget.NEWS, newsSection);
+        frame.addPage(NavTarget.MODPACKS, modpackSection);
 
-        frame.addPage(NavTarget.NEWS, buildNewsSection());
-        frame.addPage(NavTarget.MODPACKS, buildModpackSection(frame));
+        // Rebinds the topbar's refresh button to whatever the newly-shown top-level page can
+        // refresh - sub-navigation within a section (modpack/news detail) sets it directly
+        // instead, since it never goes through here (see LauncherFrame#setOnNavigate's Javadoc).
+        frame.setOnNavigate(target -> {
+            switch (target) {
+                case MODPACKS -> frame.setOnRefresh(() -> loadModpackList(frame, modpackSection));
+                case NEWS -> frame.setOnRefresh(() -> loadNewsList(frame, newsSection));
+                case SETTINGS -> frame.setOnRefresh(null);
+            }
+        });
 
         frame.navigateTo(NavTarget.MODPACKS);
         frame.setLogo(clientLogo);
@@ -211,28 +309,44 @@ final class LauncherApp {
         String username = playerInfo != null ? playerInfo.username() : "?";
         String role = playerInfo != null ? playerInfo.role() : null;
         String email = playerInfo != null ? playerInfo.email() : null;
-        AccountPopover.show(anchor, username, role, email, playerAvatar, this::logout);
+        AccountPopover.show(anchor, username, role, email, playerAvatar,
+                () -> openUrl(baseUrl.resolve("/profile").toString()), this::logout);
     }
 
-    private NewsSectionPage buildNewsSection() {
+    private NewsSectionPage buildNewsSection(LauncherFrame frame) {
         NewsSectionPage[] sectionHolder = new NewsSectionPage[1];
-        NewsListPage listPage = new NewsListPage(new NewsListViewModel(List.of(), post -> {
+        NewsListPage emptyList = new NewsListPage(new NewsListViewModel(List.of(), post -> {
         }));
-        sectionHolder[0] = new NewsSectionPage(listPage);
+        sectionHolder[0] = new NewsSectionPage(emptyList);
 
+        loadNewsList(frame, sectionHolder[0]);
+        return sectionHolder[0];
+    }
+
+    /** Fetches the news list and replaces the section's list page - the initial load, and what the topbar's refresh button re-runs while the list is shown. */
+    private void loadNewsList(LauncherFrame frame, NewsSectionPage section) {
         backgroundExecutor.execute(() -> {
             try {
                 List<Post> posts = newsApi.listPosts();
                 SwingUtilities.invokeLater(() -> {
-                    NewsListPage realList = new NewsListPage(new NewsListViewModel(posts, post ->
-                            sectionHolder[0].showDetail(new NewsDetailPage(post, () -> openUrl(post.url())))));
-                    sectionHolder[0].replaceList(realList);
+                    NewsListPage realList = new NewsListPage(new NewsListViewModel(posts,
+                            post -> showNewsDetail(frame, section, post)));
+                    section.replaceList(realList);
                 });
             } catch (Exception e) {
                 Log.warn(LauncherApp.class, "Could not load news: " + e.getMessage());
             }
         });
-        return sectionHolder[0];
+    }
+
+    private void showNewsDetail(LauncherFrame frame, NewsSectionPage section, Post post) {
+        section.showDetail(new NewsDetailPage(post, () -> openUrl(post.url())));
+        frame.showBackButton(post.title(), () -> {
+            section.showList();
+            frame.navigateTo(NavTarget.NEWS);
+        });
+        // Nothing to refresh about a single already-loaded post - the list is what "Actualiser" applies to.
+        frame.setOnRefresh(null);
     }
 
     private ModpackSectionPage buildModpackSection(LauncherFrame frame) {
@@ -242,22 +356,31 @@ final class LauncherApp {
         }));
         sectionHolder[0] = new ModpackSectionPage(emptyList);
 
+        loadModpackList(frame, sectionHolder[0]);
+        return sectionHolder[0];
+    }
+
+    /** Fetches the modpack list + logos and replaces the section's list page - the initial load, and what "Actualiser" re-runs. */
+    private void loadModpackList(LauncherFrame frame, ModpackSectionPage section) {
         backgroundExecutor.execute(() -> {
             try {
                 List<ModpackSummary> modpacks = modpackApi.listModpacks(session);
                 Set<String> installed = installedSlugs(modpacks);
+                Set<String> updateAvailable = updateAvailableSlugs(modpacks);
                 Map<String, BufferedImage> logos = fetchModpackLogos(modpacks);
                 SwingUtilities.invokeLater(() -> {
-                    ModpackListPage realList = new ModpackListPage(new ModpackListViewModel(modpacks, installed, logos,
-                            modpack -> showModpackDetail(frame, sectionHolder[0], modpack),
-                            this::quickInstallAndLaunch));
-                    sectionHolder[0].replaceList(realList);
+                    ModpackListViewModel viewModel = new ModpackListViewModel(modpacks, installed, updateAvailable, logos,
+                            modpack -> showModpackDetail(frame, section, modpack),
+                            this::quickInstallAndLaunch,
+                            this::cancelInstall,
+                            this::stopGame);
+                    currentListViewModel = viewModel;
+                    section.replaceList(new ModpackListPage(viewModel));
                 });
             } catch (Exception e) {
                 Log.warn(LauncherApp.class, "Could not load modpacks: " + e.getMessage());
             }
         });
-        return sectionHolder[0];
     }
 
     private Set<String> installedSlugs(List<ModpackSummary> modpacks) {
@@ -265,6 +388,34 @@ final class LauncherApp {
                 .map(ModpackSummary::slug)
                 .filter(slug -> java.nio.file.Files.isDirectory(dirs.instance(slug)))
                 .collect(Collectors.toSet());
+    }
+
+    private Set<String> updateAvailableSlugs(List<ModpackSummary> modpacks) {
+        return modpacks.stream()
+                .filter(modpack -> isUpdateAvailable(modpack.slug(), modpack.latestVersion()))
+                .map(ModpackSummary::slug)
+                .collect(Collectors.toSet());
+    }
+
+    /**
+     * Compares the version recorded in the local install's manifest (if any) against
+     * {@code latestVersion} - {@code false} whenever the modpack isn't installed at all
+     * ({@link LocalManifestStore#load} then returns empty), the server didn't report a latest
+     * version, or the local manifest can't be read (treated as "nothing to flag", not an error -
+     * this is a pure UI hint, not something {@link #syncModpackFiles} relies on).
+     */
+    private boolean isUpdateAvailable(String slug, String latestVersion) {
+        if (latestVersion == null) {
+            return false;
+        }
+        try {
+            return new LocalManifestStore().load(dirs.instance(slug))
+                    .map(StoredManifest::version)
+                    .map(installedVersion -> !latestVersion.equals(installedVersion))
+                    .orElse(false);
+        } catch (java.io.IOException e) {
+            return false;
+        }
     }
 
     /** Fetches every modpack's logo in parallel (best-effort - {@code null} entries just fall back to the letter placeholder). */
@@ -285,6 +436,14 @@ final class LauncherApp {
             frame.navigateTo(NavTarget.MODPACKS);
         };
 
+        // Immediate visual transition - a click that visibly does nothing until the manifest
+        // fetch completes reads as the app hanging, especially on a slow connection.
+        section.showDetail(new mc.snakenest.launcher.ui.common.LoadingPanel("Chargement de " + modpack.name() + "..."));
+        frame.showBackButton(modpack.name(), back);
+        // Re-running this whole method is an idempotent "reload" - safe to bind immediately,
+        // even before the manifest fetch below has completed.
+        frame.setOnRefresh(() -> showModpackDetail(frame, section, modpack));
+
         boolean installed = java.nio.file.Files.isDirectory(dirs.instance(modpack.slug()));
 
         backgroundExecutor.execute(() -> {
@@ -292,6 +451,7 @@ final class LauncherApp {
                 ModpackManifest manifest = modpackApi.getManifest(modpack.slug(), null, session);
                 ModpackSettings settings = modpackSettingsStore.load(modpack.slug());
                 BufferedImage logo = RemoteImages.tryLoad(modpack.image());
+                boolean updateAvailable = isUpdateAvailable(modpack.slug(), manifest.version());
                 SwingUtilities.invokeLater(() -> {
                     ModpackDetailViewModel viewModel = new ModpackDetailViewModel(
                             modpack.name(),
@@ -300,11 +460,14 @@ final class LauncherApp {
                             manifest.totalSize(),
                             manifest.files().size(),
                             installed,
+                            updateAvailable,
                             logo,
                             settings,
                             () -> installAndLaunch(modpack, manifest),
                             () -> repairModpack(modpack, manifest),
                             () -> uninstallModpack(modpack),
+                            this::cancelInstall,
+                            this::stopGame,
                             newSettings -> modpackSettingsStore.save(modpack.slug(), newSettings),
                             () -> openFolder(dirs.instance(modpack.slug())),
                             back
@@ -312,10 +475,17 @@ final class LauncherApp {
                     ModpackDetailPage detail = new ModpackDetailPage(viewModel);
                     currentDetailPage = detail;
                     section.showDetail(detail);
-                    frame.showBackButton(modpack.name(), back);
                 });
             } catch (Exception e) {
                 Log.warn(LauncherApp.class, "Could not fetch manifest for " + modpack.slug() + ": " + e.getMessage());
+                // Replaces the page's content with a retryable error state instead of bouncing
+                // back to the list plus a modal dialog - spamming "Actualiser" into a 429 used to
+                // leave the page looking stuck/broken with no obvious way to try again short of
+                // re-opening the modpack from the list.
+                SwingUtilities.invokeLater(() -> section.showDetail(new mc.snakenest.launcher.ui.common.ErrorPanel(
+                        "Impossible de charger \"" + modpack.name() + "\" : " + e.getMessage(),
+                        () -> showModpackDetail(frame, section, modpack),
+                        back)));
             }
         });
     }
@@ -326,78 +496,184 @@ final class LauncherApp {
     private void installAndLaunch(ModpackSummary modpack, ModpackManifest manifest) {
         ModpackDetailPage detailPage = currentDetailPage;
         if (detailPage != null) {
-            detailPage.setDemarrerEnabled(false);
+            detailPage.setBusy(true);
         }
+        setCardBusy(modpack.slug(), true);
 
-        backgroundExecutor.execute(() -> {
+        currentInstallTask = backgroundExecutor.submit(() -> {
             try {
                 doInstallAndLaunch(modpack, manifest, detailPage);
             } finally {
                 if (detailPage != null) {
-                    detailPage.setDemarrerEnabled(true);
+                    detailPage.setBusy(false);
                 }
+                setCardBusy(modpack.slug(), false);
             }
         });
     }
 
-    /** Same action as the card's play/download icon in the list, without opening the detail page first. */
+    /**
+     * Same action as the card's play/download icon in the list, without opening the detail page
+     * first - submitted (not fire-and-forget) so the card's icon can switch to "Annuler" and
+     * {@link #cancelInstall()} actually has something to cancel, the same as a detail-page-started
+     * install.
+     */
     private void quickInstallAndLaunch(ModpackSummary modpack) {
-        backgroundExecutor.execute(() -> {
+        setCardBusy(modpack.slug(), true);
+        currentInstallTask = backgroundExecutor.submit(() -> {
             try {
                 ModpackManifest manifest = modpackApi.getManifest(modpack.slug(), null, session);
                 doInstallAndLaunch(modpack, manifest, null);
             } catch (Exception e) {
-                Log.error(LauncherApp.class, "Quick install/launch failed for " + modpack.slug(), e);
+                if (isCancellation(e)) {
+                    Log.warn(LauncherApp.class, "Quick install/launch cancelled for " + modpack.slug());
+                } else {
+                    Log.error(LauncherApp.class, "Quick install/launch failed for " + modpack.slug(), e);
+                    showErrorDialog(modpack, e);
+                }
+            } finally {
+                setCardBusy(modpack.slug(), false);
             }
         });
     }
 
-    /** The shared body of {@link #installAndLaunch}/{@link #quickInstallAndLaunch} - {@code detailPage} may be {@code null}. */
+    /** No-op if the given slug's card isn't in the currently-shown list (e.g. it was refreshed away, or its detail page is the only thing open). */
+    private void setCardBusy(String slug, boolean busy) {
+        ModpackListViewModel list = currentListViewModel;
+        if (list != null) {
+            list.setCardBusy(slug, busy);
+        }
+    }
+
+    /** Same as {@link #setCardBusy}, for the running-game state. */
+    private void setCardRunning(String slug, boolean running) {
+        ModpackListViewModel list = currentListViewModel;
+        if (list != null) {
+            list.setCardRunning(slug, running);
+        }
+    }
+
+    /** Same as {@link #setCardBusy}, for the installed (download vs play icon) state. */
+    private void setCardInstalled(String slug, boolean installed) {
+        ModpackListViewModel list = currentListViewModel;
+        if (list != null) {
+            list.setCardInstalled(slug, installed);
+        }
+    }
+
+    /** Same as {@link #setCardBusy}, for the "Mettre à jour" state. */
+    private void setCardUpdateAvailable(String slug, boolean updateAvailable) {
+        ModpackListViewModel list = currentListViewModel;
+        if (list != null) {
+            list.setCardUpdateAvailable(slug, updateAvailable);
+        }
+    }
+
+    /** Interrupts whichever sync/install/repair task is currently running for the open detail page - the "Annuler" button. */
+    private void cancelInstall() {
+        java.util.concurrent.Future<?> task = currentInstallTask;
+        if (task != null) {
+            task.cancel(true);
+        }
+    }
+
+    /** Kills the running game process - the "Arreter" button. */
+    private void stopGame() {
+        Process process = runningGameProcess;
+        if (process != null) {
+            process.destroy();
+        }
+    }
+
+    /**
+     * The shared body of {@link #installAndLaunch}/{@link #quickInstallAndLaunch} - {@code
+     * detailPage} may be {@code null} (the quick-action path from the list has no detail page
+     * to report to). A failure here must never be silent just because {@code detailPage} is
+     * {@code null} - it used to only get logged in that case, which meant the quick-action
+     * button could fail with no visible feedback at all; falls back to a dialog instead.
+     */
     private void doInstallAndLaunch(ModpackSummary modpack, ModpackManifest manifest, ModpackDetailPage detailPage) {
         try {
             syncModpackFiles(modpack, manifest, detailPage);
             installGame(modpack, manifest, detailPage);
             if (detailPage != null) {
                 detailPage.setInstalled(true);
+                detailPage.setUpdateAvailable(false);
             }
+            setCardInstalled(modpack.slug(), true);
+            setCardUpdateAvailable(modpack.slug(), false);
             String username = authApi.fetchUsername(session);
             warnIfUsernameChanged(username, detailPage);
-            launchGame(modpack, manifest, username);
+            launchGame(modpack, manifest, username, detailPage);
         } catch (Exception e) {
+            if (isCancellation(e)) {
+                Log.warn(LauncherApp.class, "Install/launch cancelled for " + modpack.slug());
+                if (detailPage != null) {
+                    detailPage.setStatus("Annulé.");
+                    detailPage.setProgress(-1);
+                }
+                return;
+            }
             Log.error(LauncherApp.class, "Install/launch failed for " + modpack.slug(), e);
             if (detailPage != null) {
-                detailPage.setStatus("Erreur : " + e.getMessage());
+                detailPage.setError("Erreur : " + e.getMessage());
                 detailPage.setProgress(-1);
+            } else {
+                showErrorDialog(modpack, e);
             }
         }
+    }
+
+    /** True if {@code e} (or the fact the thread is now interrupted) means "cancelled", not "actually failed". */
+    private boolean isCancellation(Exception e) {
+        return Thread.currentThread().isInterrupted() || e instanceof InterruptedException;
+    }
+
+    private void showErrorDialog(ModpackSummary modpack, Exception e) {
+        SwingUtilities.invokeLater(() -> javax.swing.JOptionPane.showMessageDialog(shellFrame,
+                "Impossible d'installer/lancer \"" + modpack.name() + "\" : " + e.getMessage(),
+                "Erreur", javax.swing.JOptionPane.ERROR_MESSAGE));
     }
 
     /** Clears the locally-recorded manifest so the next sync re-verifies/re-downloads everything, then re-installs (no launch). */
     private void repairModpack(ModpackSummary modpack, ModpackManifest manifest) {
         ModpackDetailPage detailPage = currentDetailPage;
         if (detailPage != null) {
-            detailPage.setDemarrerEnabled(false);
+            detailPage.setBusy(true);
         }
-        backgroundExecutor.execute(() -> {
+        setCardBusy(modpack.slug(), true);
+        currentInstallTask = backgroundExecutor.submit(() -> {
             try {
-                new mc.snakenest.launcher.modpack.LocalManifestStore().clear(dirs.instance(modpack.slug()));
+                new LocalManifestStore().clear(dirs.instance(modpack.slug()));
                 syncModpackFiles(modpack, manifest, detailPage);
                 installGame(modpack, manifest, detailPage);
                 if (detailPage != null) {
                     detailPage.setInstalled(true);
-                    detailPage.setStatus("Reparation terminee.");
+                    detailPage.setUpdateAvailable(false);
+                    detailPage.setStatus("Réparation terminée.");
                     detailPage.setProgress(-1);
                 }
+                setCardInstalled(modpack.slug(), true);
+                setCardUpdateAvailable(modpack.slug(), false);
             } catch (Exception e) {
-                Log.error(LauncherApp.class, "Repair failed for " + modpack.slug(), e);
-                if (detailPage != null) {
-                    detailPage.setStatus("Erreur : " + e.getMessage());
-                    detailPage.setProgress(-1);
+                if (isCancellation(e)) {
+                    Log.warn(LauncherApp.class, "Repair cancelled for " + modpack.slug());
+                    if (detailPage != null) {
+                        detailPage.setStatus("Annulé.");
+                        detailPage.setProgress(-1);
+                    }
+                } else {
+                    Log.error(LauncherApp.class, "Repair failed for " + modpack.slug(), e);
+                    if (detailPage != null) {
+                        detailPage.setError("Erreur : " + e.getMessage());
+                        detailPage.setProgress(-1);
+                    }
                 }
             } finally {
                 if (detailPage != null) {
-                    detailPage.setDemarrerEnabled(true);
+                    detailPage.setBusy(false);
                 }
+                setCardBusy(modpack.slug(), false);
             }
         });
     }
@@ -410,12 +686,13 @@ final class LauncherApp {
                 deleteRecursively(dirs.instance(modpack.slug()));
                 if (detailPage != null) {
                     detailPage.setInstalled(false);
-                    detailPage.setStatus("Desinstalle.");
+                    detailPage.setStatus("Désinstallé.");
                 }
+                setCardInstalled(modpack.slug(), false);
             } catch (Exception e) {
                 Log.error(LauncherApp.class, "Uninstall failed for " + modpack.slug(), e);
                 if (detailPage != null) {
-                    detailPage.setStatus("Erreur : " + e.getMessage());
+                    detailPage.setError("Erreur : " + e.getMessage());
                 }
             }
         });
@@ -442,7 +719,7 @@ final class LauncherApp {
         if (playerInfo == null || playerInfo.username() == null || playerInfo.username().equals(currentUsername)) {
             return;
         }
-        String message = "Pseudo change depuis la connexion (" + playerInfo.username() + " -> " + currentUsername + ") : l'UUID hors-ligne sera different.";
+        String message = "Pseudo changé depuis la connexion (" + playerInfo.username() + " -> " + currentUsername + ") : l'UUID hors-ligne sera différent.";
         Log.warn(LauncherApp.class, message);
         if (detailPage != null) {
             detailPage.setStatus(message);
@@ -454,12 +731,12 @@ final class LauncherApp {
             detailPage.setStatus("Synchronisation des fichiers...");
             detailPage.setProgress(0);
         }
-        var syncEngine = new ModpackSyncEngine(new mc.snakenest.launcher.modpack.ModpackFileDownloader(modpackApi), new mc.snakenest.launcher.modpack.LocalManifestStore());
+        var syncEngine = new ModpackSyncEngine(new mc.snakenest.launcher.modpack.ModpackFileDownloader(modpackApi), new LocalManifestStore());
         syncEngine.sync(modpack.slug(), dirs.instance(modpack.slug()), manifest, session, new mc.snakenest.launcher.modpack.SyncProgressListener() {
             @Override
             public void onFileStarted(String path, long size) {
                 if (detailPage != null) {
-                    detailPage.setStatus("Telechargement : " + path);
+                    detailPage.setStatus("Téléchargement : " + path);
                 }
             }
 
@@ -498,7 +775,7 @@ final class LauncherApp {
         }
     }
 
-    private void launchGame(ModpackSummary modpack, ModpackManifest manifest, String username) throws Exception {
+    private void launchGame(ModpackSummary modpack, ModpackManifest manifest, String username, ModpackDetailPage detailPage) throws Exception {
         ModpackSettings settings = modpackSettingsStore.load(modpack.slug());
         LaunchRequest request = new LaunchRequest(
                 username,
@@ -511,23 +788,58 @@ final class LauncherApp {
                 settings.extraJvmArgs(),
                 session.key().seedHex()
         );
-        gameLaunchService.launch(request);
+        Process process = gameLaunchService.launch(request);
+        runningGameProcess = process;
+        if (detailPage != null) {
+            detailPage.setRunning(true);
+        }
+        setCardRunning(modpack.slug(), true);
+        if (discordPresence != null) {
+            discordPresence.setPlaying(modpack.name());
+        }
+        process.onExit().thenRun(() -> {
+            if (runningGameProcess == process) {
+                runningGameProcess = null;
+            }
+            if (detailPage != null) {
+                detailPage.setRunning(false);
+            }
+            setCardRunning(modpack.slug(), false);
+            if (discordPresence != null) {
+                discordPresence.setBrowsing();
+            }
+        });
     }
 
     private String describeInstallStep(InstallStep step) {
         return switch (step) {
             case READING_VERSION_INFO -> "Lecture des informations de version...";
-            case DOWNLOADING_LIBRARIES -> "Telechargement des bibliotheques...";
-            case DOWNLOADING_ASSETS -> "Telechargement des assets...";
+            case DOWNLOADING_LIBRARIES -> "Téléchargement des bibliothèques...";
+            case DOWNLOADING_ASSETS -> "Téléchargement des assets...";
             case EXTRACTING_NATIVES -> "Extraction des fichiers natifs...";
             case INSTALLING_MOD_LOADER -> "Installation du mod loader...";
             case FINALIZING -> "Finalisation...";
-            case DONE -> "Termine.";
+            case DONE -> "Terminé.";
         };
     }
 
     /** Clears the session and shows the login window again - never quits the whole app. */
     private void logout() {
+        // Best-effort and fired off in the background - a failure here (offline, server down)
+        // must never block logging out locally, but this is always attempted: skipping it would
+        // leave a key that leaked before this point (e.g. copied off disk) valid forever
+        // server-side, even after the legitimate user logs out.
+        PlayerSession sessionToRevoke = session;
+        if (sessionToRevoke != null) {
+            backgroundExecutor.execute(() -> {
+                try {
+                    authApi.revokeKey(sessionToRevoke);
+                } catch (Exception e) {
+                    Log.warn(LauncherApp.class, "Could not revoke the launcher key server-side: " + e.getMessage());
+                }
+            });
+        }
+
         keyStorage.delete();
         var config = configStore.load();
         config.setPlayerId(null);

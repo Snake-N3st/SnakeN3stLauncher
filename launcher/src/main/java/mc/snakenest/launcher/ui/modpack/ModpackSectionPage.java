@@ -2,6 +2,7 @@ package mc.snakenest.launcher.ui.modpack;
 
 import mc.snakenest.launcher.ui.Resettable;
 
+import javax.swing.JComponent;
 import javax.swing.JPanel;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
@@ -12,7 +13,7 @@ import java.awt.CardLayout;
  * detail view (the third mockup), since that's a sub-navigation within this
  * section rather than a top-level sidebar page.
  *
- * <p>Implements {@link Resettable} so re-navigating here (e.g. Actualites
+ * <p>Implements {@link Resettable} so re-navigating here (e.g. Actualités
  * then back to Modpacks) always lands on the list, not a stale detail view.
  */
 public final class ModpackSectionPage extends JPanel implements Resettable {
@@ -48,7 +49,13 @@ public final class ModpackSectionPage extends JPanel implements Resettable {
         showList();
     }
 
-    public void showDetail(ModpackDetailPage detailPage) {
+    /**
+     * Usually a {@code ModpackDetailPage}, but also used with a
+     * {@code ui.common.LoadingPanel} placeholder shown immediately on click,
+     * before the manifest fetch behind the real detail page completes - see
+     * {@code LauncherApp#showModpackDetail}.
+     */
+    public void showDetail(JComponent detailPage) {
         detailContainer.removeAll();
         detailContainer.add(detailPage, BorderLayout.CENTER);
         detailContainer.revalidate();

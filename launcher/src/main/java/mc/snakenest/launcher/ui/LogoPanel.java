@@ -30,7 +30,16 @@ final class LogoPanel extends JPanel {
     }
 
     LogoPanel(int size) {
-        setPreferredSize(new Dimension(size, size));
+        // setMinimumSize/setMaximumSize matter here just as much as setPreferredSize -
+        // LoginFrame's `center` uses BoxLayout.Y_AXIS, and without an explicit maximum this
+        // panel competed with the trailing Box.createVerticalGlue() for leftover space instead
+        // of staying a fixed size: confirmed by dumping real bounds, an 88px LogoPanel there
+        // rendered at 452x189 (stretched to the column's full width, and taller too) instead of
+        // 88x88. Same root cause, same fix, as ui.common.IconButton's Javadoc.
+        Dimension dimension = new Dimension(size, size);
+        setPreferredSize(dimension);
+        setMinimumSize(dimension);
+        setMaximumSize(dimension);
         setOpaque(false);
     }
 
@@ -61,11 +70,26 @@ final class LogoPanel extends JPanel {
         }
     }
 
+    /**
+     * Scales preserving aspect ratio and centers within the {@code size x size} square, rather
+     * than force-stretching the source image to fill it - a client's real logo is very often a
+     * non-square wordmark, and stretching it not only distorts it but reads as "not centered"
+     * (the visual subject sits off to one side once squished) even though the square region
+     * itself is centered. Same "contain, don't stretch" rule as the site's own `&lt;img&gt;` CSS
+     * fix (see CONTEXT.md) and {@code ui.common.RoundedImageIcon}.
+     */
     private void paintRealLogo(Graphics2D g2, int x, int y, int size) {
         RoundRectangle2D clip = new RoundRectangle2D.Float(x, y, size, size, size / 4f, size / 4f);
         var oldClip = g2.getClip();
         g2.clip(clip);
-        g2.drawImage(image, x, y, size, size, null);
+
+        double scale = Math.min((double) size / image.getWidth(), (double) size / image.getHeight());
+        int drawW = (int) Math.round(image.getWidth() * scale);
+        int drawH = (int) Math.round(image.getHeight() * scale);
+        int drawX = x + (size - drawW) / 2;
+        int drawY = y + (size - drawH) / 2;
+        g2.drawImage(image, drawX, drawY, drawW, drawH, null);
+
         g2.setClip(oldClip);
     }
 

@@ -26,6 +26,19 @@ exists.
 - **`LauncherReleaseInfo`** — mirrors the JSON shape of the `latest`
   endpoint (`version`, `sha256`, `size`, `changelog`, `download_url`).
 
+- **`BootstrapSplash`** — a small undecorated "loading..." popup
+  (title + status label + indeterminate progress bar) shown for however
+  long `BootstrapMain` spends checking for/downloading a release, the same
+  idea as the splash screen GIMP or IntelliJ IDEA show at startup. Package-
+  private, self-contained Swing (no dependency on the launcher module's
+  `ui.common.LoadingPanel`, to keep this module's GPL-free boundary from
+  ever depending on anything in `launcher`, even something GPL-free itself
+  today). `showIfPossible()`/`showFatalError()` both degrade to a no-op in
+  a headless environment (`GraphicsEnvironment.isHeadless()`) rather than
+  ever failing the actual update/handoff logic over a UI nicety - every
+  caller in `BootstrapMain` null-checks accordingly.
+
 Depends only on `common` (paths/hashing/logging) plus Gson for the tiny
-JSON response - no UI toolkit, no crypto library beyond what's needed to
-verify a hash, nothing GPL.
+JSON response - no crypto library beyond what's needed to verify a hash,
+nothing GPL. Swing/AWT (`BootstrapSplash`) is part of the JDK itself, not
+an extra dependency, so this doesn't change that.

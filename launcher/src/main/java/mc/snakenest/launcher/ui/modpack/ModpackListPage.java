@@ -11,7 +11,12 @@ import javax.swing.border.EmptyBorder;
 import java.awt.BorderLayout;
 import java.awt.Component;
 
-/** Scrollable list of modpack cards - one entry point per modpack accessible to the player. */
+/**
+ * Scrollable list of modpack cards - one entry point per modpack accessible to the player.
+ * Refreshing this list is done via the topbar's "Actualiser" button (see {@code
+ * ui.LauncherFrame#setOnRefresh}), not a button on this page itself - the same button also
+ * refreshes the modpack detail page and the news list, so it doesn't belong to any one of them.
+ */
 public final class ModpackListPage extends JPanel {
 
     public ModpackListPage(ModpackListViewModel viewModel) {
@@ -29,8 +34,10 @@ public final class ModpackListPage extends JPanel {
         list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
 
         for (ModpackSummary modpack : viewModel.modpacks()) {
-            ModpackCardView card = new ModpackCardView(modpack, viewModel.isInstalled(modpack), viewModel.logoFor(modpack),
-                    () -> viewModel.select(modpack), () -> viewModel.quickAction(modpack));
+            ModpackCardView card = new ModpackCardView(modpack, viewModel.isInstalled(modpack), viewModel.isUpdateAvailable(modpack),
+                    viewModel.logoFor(modpack), () -> viewModel.select(modpack), () -> viewModel.quickAction(modpack),
+                    viewModel.onCancel(), viewModel.onStop());
+            viewModel.registerCard(modpack.slug(), card);
             card.setAlignmentX(Component.LEFT_ALIGNMENT);
             card.setMaximumSize(new java.awt.Dimension(Integer.MAX_VALUE, 84));
             list.add(card);

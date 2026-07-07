@@ -18,6 +18,10 @@
         itself. No GPL dependencies on purpose: checks the site for the
         latest launcher release, downloads + verifies it, runs it as a new
         process, then exits immediately (never two JVMs running at once).
+
+        Proprietary (see LICENSE), unlike "launcher" - never combines with
+        GPL code, so it's under no copyleft obligation and stays closed at
+        the copyright holder's discretion.
     -->
 
     <dependencies>

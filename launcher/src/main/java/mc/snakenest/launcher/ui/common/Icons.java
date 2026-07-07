@@ -125,6 +125,52 @@ public final class Icons {
         });
     }
 
+    /**
+     * "⭮" (U+2B6E, CLOCKWISE TRIANGLE-HEADED OPEN CIRCLE ARROW) - the topbar's "Actualiser"
+     * button.
+     *
+     * <p>Three different hand-drawn vector attempts (an open chevron on an arc, a filled
+     * triangular arrowhead on an arc, then two point-symmetric arrow+arc pairs) all read as an
+     * ambiguous blob/hook rather than a recognizable "circular arrow" at toolbar sizes
+     * (~20-24px) - there just isn't enough room in a handful of polyline segments at that pixel
+     * count to carry the shape clearly. A real font's hinting/rendering at small sizes does a
+     * much better job of this exact problem than a few dozen manually-plotted points can, so
+     * this one glyph is drawn via {@link Graphics2D#drawString} instead of {@link Path2D} - the
+     * one icon in this class that isn't a Java2D shape (see the class Javadoc). Falls back to
+     * whatever glyph the platform's font substitution finds for this codepoint if the exact
+     * "open circle, triangle head" glyph isn't in any installed font - confirmed present via
+     * logical font fallback (Dialog/SansSerif/Serif) on this dev machine (Symbola/Noto Sans
+     * Symbols2), not verified on Windows/macOS.
+     */
+    public static Icon refresh(int size) {
+        return icon(size, (g, s) -> {
+            String glyph = "⭮";
+            g.setFont(new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.PLAIN, Math.round(s * 0.92f)));
+            java.awt.FontMetrics metrics = g.getFontMetrics();
+            int x = (s - metrics.stringWidth(glyph)) / 2;
+            int y = (s - metrics.getHeight()) / 2 + metrics.getAscent();
+            g.drawString(glyph, x, y);
+        });
+    }
+
+    /** A simple X mark - the detail page's/quick-action's "Annuler" (cancel) state. */
+    public static Icon cancel(int size) {
+        return icon(size, (g, s) -> {
+            g.setStroke(stroke(s));
+            int pad = s / 4;
+            g.drawLine(pad, pad, s - pad, s - pad);
+            g.drawLine(s - pad, pad, pad, s - pad);
+        });
+    }
+
+    /** A filled rounded square - the detail page's/quick-action's "Arrêter" (stop) state. */
+    public static Icon stop(int size) {
+        return icon(size, (g, s) -> {
+            int pad = s / 4;
+            g.fill(new java.awt.geom.RoundRectangle2D.Float(pad, pad, s - pad * 2, s - pad * 2, s / 6f, s / 6f));
+        });
+    }
+
     private static BasicStroke stroke(int size) {
         return new BasicStroke(Math.max(1.5f, size / 10f), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
     }

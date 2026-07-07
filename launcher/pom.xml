@@ -72,7 +72,31 @@
             <version>5.14.2</version>
             <scope>test</scope>
         </dependency>
+
+        <!--
+            Apache-2.0. Optional feature (Discord Rich Presence) - see game.discord.README.md.
+            Via JitPack since upstream only ever published to the now-defunct JCenter/Bintray;
+            pinned to an exact commit SHA since the project has no tagged releases. Pulls in
+            junixsocket (native libraries for Unix domain sockets, bundled per-platform in its
+            own jars - not something we compile/ship ourselves) to talk to Discord's local IPC
+            socket on Linux/macOS. Accepted knowingly: this is the only native dependency in the
+            whole launcher, but the feature is entirely best-effort - if Discord/junixsocket
+            fails to load on some platform, DiscordPresenceService swallows it and the rest of
+            the launcher is unaffected.
+        -->
+        <dependency>
+            <groupId>com.github.jagrosh</groupId>
+            <artifactId>DiscordIPC</artifactId>
+            <version>a8d6631cc90b25f1ede2178b99ad19d016f002a0</version>
+        </dependency>
     </dependencies>
+
+    <repositories>
+        <repository>
+            <id>jitpack.io</id>
+            <url>https://jitpack.io</url>
+        </repository>
+    </repositories>
 
     <build>
         <finalName>snaken3st-launcher-${project.version}</finalName>
