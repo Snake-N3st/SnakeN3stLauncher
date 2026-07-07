@@ -1,4 +1,4 @@
-package mc.snakenest.launcher.util;
+package mc.snakenest.launcher.bootstrap;
 
 import java.io.IOException;
 import java.io.InputStream;

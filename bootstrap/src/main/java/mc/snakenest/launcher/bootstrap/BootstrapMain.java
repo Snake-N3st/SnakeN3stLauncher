@@ -1,7 +1,6 @@
 package mc.snakenest.launcher.bootstrap;
 
 import mc.snakenest.launcher.util.AppDirs;
-import mc.snakenest.launcher.util.ClientIds;
 import mc.snakenest.launcher.util.Log;
 import mc.snakenest.launcher.util.Sha256;
 
