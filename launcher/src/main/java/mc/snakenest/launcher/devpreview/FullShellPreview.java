@@ -2,6 +2,7 @@ package mc.snakenest.launcher.devpreview;
 
 import mc.snakenest.launcher.config.ConfigStore;
 import mc.snakenest.launcher.config.Theme;
+import mc.snakenest.launcher.modpack.ModpackSettings;
 import mc.snakenest.launcher.modpack.ModpackSummary;
 import mc.snakenest.launcher.news.Post;
 import mc.snakenest.launcher.ui.LauncherFrame;
@@ -42,9 +43,7 @@ public final class FullShellPreview {
 
     private static void buildAndShow(ThemeController themeController) {
         LauncherFrame frame = new LauncherFrame(
-                () -> System.out.println("[preview] would open Twitch"),
-                () -> System.out.println("[preview] would open Discord"),
-                anchor -> AccountPopover.show(anchor, "JoueurDeTest", "Admin", "joueur@example.com",
+                anchor -> AccountPopover.show(anchor, "JoueurDeTest", "Admin", "joueur@example.com", null,
                         () -> System.out.println("[preview] would log out"))
         );
 
@@ -70,7 +69,8 @@ public final class FullShellPreview {
         // reference to the section it's about to be placed inside of.
         ModpackSectionPage[] sectionHolder = new ModpackSectionPage[1];
         ModpackListPage listPage = new ModpackListPage(new ModpackListViewModel(modpacks, Set.of("aventure-ultime"),
-                modpack -> showDetail(frame, sectionHolder[0], modpack)));
+                modpack -> showDetail(frame, sectionHolder[0], modpack),
+                modpack -> System.out.println("[preview] would quick install/launch " + modpack.slug())));
         sectionHolder[0] = new ModpackSectionPage(listPage);
         frame.addPage(NavTarget.MODPACKS, sectionHolder[0]);
 
@@ -89,8 +89,13 @@ public final class FullShellPreview {
                 "Premiere version stable.",
                 modpack.totalSize(),
                 126,
+                modpack.slug().equals("aventure-ultime"),
+                null,
+                ModpackSettings.defaults(),
                 () -> System.out.println("[preview] would install/launch " + modpack.slug()),
-                () -> System.out.println("[preview] would open modpack settings"),
+                () -> System.out.println("[preview] would repair " + modpack.slug()),
+                () -> System.out.println("[preview] would uninstall " + modpack.slug()),
+                newSettings -> System.out.println("[preview] would save settings " + newSettings),
                 () -> System.out.println("[preview] would open the instance folder"),
                 back
         );

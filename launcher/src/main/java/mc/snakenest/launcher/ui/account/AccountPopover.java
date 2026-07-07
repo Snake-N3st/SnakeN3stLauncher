@@ -1,5 +1,7 @@
 package mc.snakenest.launcher.ui.account;
 
+import mc.snakenest.launcher.ui.common.RoundedImageIcon;
+
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JLabel;
@@ -10,17 +12,33 @@ import javax.swing.UIManager;
 import javax.swing.border.EmptyBorder;
 import java.awt.Component;
 import java.awt.Font;
+import java.awt.image.BufferedImage;
 
-/** Small popover opened from the top bar's account button: who's logged in, and a logout action. */
+/**
+ * Small popover opened from the top bar's account button: who's logged in,
+ * and a logout action. Purely a view - the username/role/email/avatar it
+ * shows are already-fetched data handed in by the caller ({@code
+ * LauncherApp}), never fetched here; this popover must never trigger a
+ * network call just from being opened (see {@code ui/README.md}).
+ */
 public final class AccountPopover {
+
+    private static final int AVATAR_SIZE = 64;
 
     private AccountPopover() {
     }
 
-    public static void show(Component invoker, String username, String role, String email, Runnable onLogout) {
+    public static void show(Component invoker, String username, String role, String email, BufferedImage avatar, Runnable onLogout) {
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBorder(new EmptyBorder(12, 16, 12, 16));
+
+        if (avatar != null) {
+            JLabel avatarLabel = new JLabel(new RoundedImageIcon(avatar, AVATAR_SIZE));
+            avatarLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+            avatarLabel.setBorder(new EmptyBorder(0, 0, 8, 0));
+            panel.add(avatarLabel);
+        }
 
         JLabel usernameLabel = new JLabel(username);
         usernameLabel.setFont(usernameLabel.getFont().deriveFont(Font.BOLD, 15f));

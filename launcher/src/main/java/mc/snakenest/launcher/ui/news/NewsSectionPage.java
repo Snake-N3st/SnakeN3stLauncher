@@ -1,5 +1,7 @@
 package mc.snakenest.launcher.ui.news;
 
+import mc.snakenest.launcher.ui.Resettable;
+
 import javax.swing.JPanel;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
@@ -7,9 +9,10 @@ import java.awt.CardLayout;
 /**
  * The whole "Actualites" section registered under {@code NavTarget.NEWS}:
  * a small internal {@link CardLayout} between the list and one post's full
- * content, mirroring {@code ui.modpack.ModpackSectionPage}.
+ * content, mirroring {@code ui.modpack.ModpackSectionPage} (including
+ * implementing {@link Resettable} for the same reason - see its Javadoc).
  */
-public final class NewsSectionPage extends JPanel {
+public final class NewsSectionPage extends JPanel implements Resettable {
 
     private static final String LIST = "list";
     private static final String DETAIL = "detail";
@@ -35,6 +38,11 @@ public final class NewsSectionPage extends JPanel {
 
     public void showList() {
         cardLayout.show(this, LIST);
+    }
+
+    @Override
+    public void resetToDefault() {
+        showList();
     }
 
     public void showDetail(NewsDetailPage detailPage) {

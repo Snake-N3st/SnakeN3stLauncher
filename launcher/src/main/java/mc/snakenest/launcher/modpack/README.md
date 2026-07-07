@@ -25,7 +25,17 @@ string or path alone (two versions sharing a file never re-download it).
   for exactly that reason - it's pure and easy to get subtly wrong.
 
 - **`LocalManifestStore`** — persists the last-applied manifest as
-  `.sn3-manifest.json` inside the instance directory.
+  `.sn3-manifest.json` inside the instance directory. `clear(instanceDir)`
+  forgets it, so the next sync treats every file as needing a fresh
+  download+verify - the whole mechanism behind the "Reparer" action
+  (`ui.modpack.ModpackDetailPage`).
+
+- **`ModpackSettings`** / **`ModpackSettingsStore`** — per-modpack memory
+  allocation + custom JVM args, edited from the "Gerer" action
+  (`ui.modpack.ModpackSettingsDialog`). Persisted at
+  `util.AppDirs#modpackSettingsFile`, deliberately **outside** the instance
+  directory itself so a "Reparer" pass (which only touches files inside the
+  instance dir) can never wipe it.
 
 - **`ModpackFileDownloader`** — downloads one file, verifying its SHA-256
   **before** it's ever written at its final path
@@ -34,7 +44,15 @@ string or path alone (two versions sharing a file never re-download it).
 
 - **`ModpackSyncEngine`** — orchestrates the whole thing: diff, download
   what's needed, delete what's gone (pruning now-empty directories, bounded
-  to the instance dir), then record the new manifest as applied.
+  to the instance dir), then record the new manifest as applied. Downloads
+  happen **in parallel** (`downloadAllInParallel`, bounded to 6 concurrent
+  files via a fixed thread pool) - a modpack can be dozens/hundreds of small
+  files, and downloading them one at a time (the original implementation)
+  made a sync feel very slow since every file paid a full round-trip before
+  the next started. `awaitAll` waits for every download and re-throws the
+  first failure with its original checked type, so callers still only ever
+  see `IOException`/`ModpackApiException`/`InterruptedException`, same as
+  before parallelizing.
 
 - **`InstancePaths`** — every manifest `path` is server-supplied and used
   to build a filesystem path; this resolves it defensively (normalize +

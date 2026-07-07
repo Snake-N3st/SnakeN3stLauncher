@@ -102,6 +102,55 @@ au jar complet qu'il lance.
   un chemin serveur malveillant (`../../..`) avant toute écriture/suppression
   liée à un modpack — défense en profondeur, le serveur est présumé de
   confiance mais ça ne coûte rien.
+- **VANILLA n'est PAS rejeté** (revert d'une décision précédente) : une
+  première passe avait fait échouer `FlowUpdaterGameInstallService.install()`
+  explicitement pour `ModLoader.VANILLA` (raisonnement : sans le mod
+  `universalpacket`, l'auth in-game via `-Dsn3.token` ne fonctionne pas).
+  L'utilisateur a explicitement demandé de revenir dessus : "on ne doit
+  retirer le support vanilla que si il pose problème" — vanilla est donc de
+  nouveau installé/lancé normalement comme n'importe quel loader ; un client
+  vanilla n'aura simplement pas le login in-game passwordless, ce qui n'est
+  pas la responsabilité du launcher à bloquer.
+- **Vrai bug corrigé : crash `Could not install X.X.X (FORGE)`** —
+  `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1` dans
+  `fr.flowarg.flowupdater.versions.forge.ForgeVersion`. Cause : FlowUpdater
+  attend `loaderVersion` au format `"<mcVersion>-<forgeBuild>"` (ex.
+  `"1.20.1-47.2.20"`, il fait un `split("-")` et indexe `data[1]`), alors que
+  le manifest ne fournit que le numéro de build brut (ex. `"47.2.20"`).
+  Corrigé dans `FlowUpdaterGameInstallService` (`mcVersionPrefixed`) en
+  préfixant nous-mêmes `mcVersion + "-"` avant d'appeler FlowUpdater, plutôt
+  que d'exiger que le site stocke la chaîne combinée. Même traitement pour
+  NeoForge, mais seulement pour sa toute première version (1.20.1) qui
+  partageait cet ancien format — les versions NeoForge modernes (ex.
+  `"20.4.237"`) sont autonomes et passées telles quelles. Fabric n'a jamais
+  eu ce problème (sa version est toujours autonome).
+- **Téléchargement des fichiers de modpack parallélisé** : `ModpackSyncEngine`
+  téléchargeait les fichiers un par un (très lent pour un modpack avec
+  beaucoup de petits fichiers, chaque fichier payant un aller-retour complet
+  avant que le suivant démarre). Il utilise maintenant un pool de threads
+  borné (6 téléchargements simultanés max) via `downloadAllInParallel` ;
+  `awaitAll` attend tout puis relance la première erreur rencontrée avec son
+  type d'origine (`IOException`/`ModpackApiException`/`InterruptedException`).
+- **Logo de modpack enfin affiché** : `ModpackSummary`/le manifest portaient
+  déjà un `image` (URL), mais ni `ModpackCardView` ni `ModpackDetailPage` ne
+  le chargeaient jamais — toujours le placeholder-lettre de `AvatarPanel`.
+  `AvatarPanel` sait maintenant afficher une vraie image (`setImage`, même
+  logique que `LogoPanel`) ; `LauncherApp` la pré-télécharge (en parallèle
+  pour la liste, `fetchModpackLogos`) avant de construire l'UI, comme pour
+  le logo client/avatar compte.
+- **`LauncherApp.start()` ne tourne plus sur l'EDT** (session UI/UX) :
+  `Main.main()` appelle `app.start()` directement (thread principal, pas
+  `SwingUtilities.invokeLater`), pour que le fetch bloquant du logo/nom du
+  client (et, si une session existe déjà, des infos joueur) puisse se faire
+  *avant* la construction de `LoginFrame`/`LauncherFrame` sans geler l'EDT —
+  la fenêtre n'affiche donc jamais un placeholder puis un flash vers le
+  vrai logo. `LauncherApp` bascule ensuite sur l'EDT via `invokeLater` pour
+  construire les fenêtres. `PlayerInfo` (username/role/email/avatar) est
+  fetché une seule fois, au login et au démarrage — jamais au clic sur
+  l'icône de profil (`AccountPopover` ne fait plus aucune requête réseau).
+- **Logout** : reconstruit et réaffiche `LoginFrame` (`showLogin()`) au lieu
+  de `System.exit(0)` — bug signalé, le bouton ne rouvrait pas la page de
+  connexion.
 - **Bug corrigé récemment** : `DeviceAuthServiceTest` appelait le vrai
   `Desktop.browse()` à chaque exécution des tests (pas mocké), ouvrant des
   onglets de navigateur réels vers des tokens de test bidons → 404 dans le
@@ -110,6 +159,41 @@ au jar complet qu'il lance.
   méthode), injectable via un 4e constructeur de `DeviceAuthService`. **Toute
   nouvelle classe qui touche `Desktop`/réseau/fichiers doit être conçue pour
   rester mockable dans les tests dès le départ.**
+- **Logo réel du client** (nouveau) : le launcher affiche maintenant le vrai
+  nom/logo du `LauncherClient` (au lieu d'un placeholder générique "SN") dans
+  `LoginFrame` et `LauncherFrame`. Nouveau endpoint site non signé
+  `GET /api/launcher-auth/client?client_id=...` → `{"name":..., "image":...}`
+  (`ClientInfoController` côté site). Côté launcher :
+  `auth.ClientInfo` (record), `LauncherAuthApiClient#fetchClientInfo`,
+  `ui.common.RemoteImages.tryLoad(url)` (best-effort, ne lève jamais,
+  `null` si échec — appelant doit rester sur le placeholder),
+  `ui.LogoPanel#setImage(BufferedImage)` (bascule logo réel/placeholder),
+  `LauncherApp#fetchClientBranding(...)` (fetch en arrière-plan + callback
+  EDT), câblé dans `showLogin()` et `showShell()`.
+- **Bug CSS "le logo prend la moitié de la page" (site, corrigé deux fois)** :
+  la vraie cause racine est la règle globale d'Azuriom
+  `img { max-width: 100%; height: auto; }` dans
+  `/server/azuriom/public/assets/css/base.css` (fichier core, pas touché) —
+  un attribut HTML brut `height="64"` sur une balise `<img>` a la PLUS BASSE
+  priorité de toute la cascade CSS, donc n'importe quelle règle externe même
+  non qualifiée (`img{}`) l'écrase silencieusement. Un premier correctif
+  (session précédente) n'avait patché que les formulaires admin
+  (`_form.blade.php` ×2) — insuffisant, le bug existait ailleurs. Corrigé
+  partout en remplaçant tout `height="N"`/`width="N"` par un `style="max-height:
+  Npx; max-width: 100%; object-fit: contain;"` inline (qui, lui, gagne
+  toujours contre un sélecteur `img` non qualifié). Fichiers touchés (les 5
+  seuls `<img>` de tout le repo `SnakeN3stLogin`, vérifié par grep) :
+  `site-plugin/resources/views/admin/_form.blade.php`,
+  `modpacks-plugin/resources/views/admin/_form.blade.php`,
+  `site-plugin/resources/views/confirm.blade.php` (la vraie page de
+  consentement utilisateur — probablement celle que l'utilisateur regardait
+  en signalant que le bug persistait "pas que sur la page admin"),
+  `site-plugin/resources/views/admin/index.blade.php` (vignette liste
+  clients), `modpacks-plugin/resources/views/admin/index.blade.php`
+  (vignette liste modpacks). **Règle à respecter pour tout futur `<img>`
+  ajouté n'importe où dans `SnakeN3stLogin`** : ne jamais utiliser
+  `height=`/`width=` bruts, toujours un `style="max-height: ...; max-width:
+  100%; object-fit: contain;"` inline.
 
 ## 4. Structure des packages (module `launcher`)
 
@@ -133,15 +217,18 @@ mc.snakenest.launcher            Main.java (composition root minimal) + Launcher
                                   fr.theshark34.openlauncherlib.*/fr.flowarg.openlauncherlib.*
 .news                             NewsApiClient, Post (Azuriom /api/posts, public, non signé)
 .util                              HumanSize (le reste — AppDirs, Hex, Sha256, AtomicFiles, Log — est dans `common`)
-.ui                                LauncherFrame, Sidebar, TopBar, ContentArea, LogoPanel, ThemeController,
-                                  NavTarget, LoginFrame (premier écran, avant toute session)
-.ui.common                        Icons/VectorIcon (icônes dessinées en Java2D, PAS de vrais assets Lucide/Simple
-                                  Icons bundlés — Twitch/Discord sont des glyphes génériques, pas les vrais logos),
-                                  IconButton, Buttons, AvatarPanel
+.ui                                LauncherFrame, Sidebar (plus de Twitch/Discord), TopBar, ContentArea, LogoPanel
+                                  (placeholder = parchemin, plus "SN"), ThemeController, NavTarget, LoginFrame
+                                  (premier écran, avant toute session, message de bienvenue)
+.ui.common                        Icons/VectorIcon (icônes dessinées en Java2D ; plus de twitch()/discord(), supprimées
+                                  avec la fonctionnalité), IconButton, Buttons (flatIcon + iconButton), AvatarPanel
+                                  (auto-centré), RemoteImages, RoundedImageIcon (avatar rond dans un bouton/label)
 .ui.modpack                        ModpackSectionPage (CardLayout liste/détail), ModpackListPage, ModpackDetailPage
+                                  (bouton Télécharger/Démarrer selon `installed`)
 .ui.news                          NewsSectionPage, NewsListPage, NewsDetailPage
 .ui.settings                      SettingsPage (thème, dossier données, logout)
-.ui.account                        AccountPopover (username/role/email + logout)
+.ui.account                        AccountPopover (username/role/email/avatar + logout — jamais de requête réseau
+                                  au clic, tout est déjà en cache dans LauncherApp)
 .devpreview                        FullShellPreview — QA manuelle, données factices, à lancer depuis l'IDE
 ```
 
@@ -166,6 +253,29 @@ GET /api/launcher-auth/releases/{version}/download?client_id=...
 ```
 Documenté dans `LAUNCHER_INTEGRATION.md` section 8.
 
+### 1c. `site-plugin` — branding client + infos joueur consolidées (session UI/UX)
+Deux endpoints ajoutés pour le travail de branding réel du launcher :
+- `GET /api/launcher-auth/client?client_id=...` (non signé, throttlé) →
+  `{"name":..., "image":...}` — `ClientInfoController`, utilisé pour afficher
+  le vrai nom/logo du client sur l'écran de connexion et dans le shell.
+- `GET /api/launcher-auth/player/info?...` (signé, même schéma que les 3
+  endpoints `player/username|role|email` existants) →
+  `{"username":..., "role":..., "email":..., "avatar":...}` en **un seul
+  appel** — `PlayerInfoController::info()`, utilise `User::getAvatar()`
+  (Azuriom core). Les 3 endpoints séparés restent pour compatibilité mais le
+  launcher n'appelle plus que celui-ci. Documenté dans
+  `LAUNCHER_INTEGRATION.md` sections 1bis et 6.
+
+### Bug CSS répété "le logo prend la moitié de la page" (déjà corrigé, à ne pas réintroduire)
+Cause racine : la règle globale d'Azuriom `img { max-width: 100%; height:
+auto; }` (`base.css` core) écrase silencieusement tout attribut HTML brut
+`height="..."` (priorité de cascade CSS la plus basse qui existe). Corrigé
+partout où ça existait dans `SnakeN3stLogin` (`_form.blade.php` ×2,
+`confirm.blade.php`, `index.blade.php` ×2 dans `site-plugin`/`modpacks-plugin`)
+en remplaçant par un `style="max-height: Npx; max-width: 100%; object-fit:
+contain;"` inline. **Règle pour tout futur `<img>` ajouté dans ce repo** :
+jamais de `height=`/`width=` bruts, toujours ce `style=` inline.
+
 ## 6. Environnement de test local (confirmé fonctionnel)
 
 - Azuriom local servi sur **`http://127.0.0.1`** (port 80), code source sous
@@ -174,8 +284,19 @@ Documenté dans `LAUNCHER_INTEGRATION.md` section 8.
   `modpacks`, `ssh-manager`.
 - Un `LauncherClient` de test existe déjà : nom `dev-test-launcher-client`,
   `client_id = QnKK3ntjDXHfQ5PhQCQxMJpR85LNQqd2`.
-- Un modpack de démo `aventure-ultime` existe déjà (fourni par le plugin).
+- Un modpack réel nommé **`test`** existe dans la DB locale actuelle (loader
+  Forge 1.20.1 - `aventure-ultime`, mentionné dans une version antérieure de
+  ce fichier, n'y existe plus/pas actuellement).
 - Un vrai compte admin existe (`User::first()`, username `RaphaelGF11`).
+- **Piège repéré (pas un bug launcher)** : `.env` du site local a
+  `APP_URL=http://127.0.0.1:8087`, alors que le site est en pratique servi
+  sur `http://127.0.0.1` (port 80). Ça n'affecte pas les vraies réponses API
+  (Laravel dérive `url()` de la requête HTTP entrante, donc `/api/...` reste
+  correct), mais **`php artisan tinker`** n'a pas de contexte requête et
+  retombe sur `APP_URL` — un `$model->imageUrl()` inspecté depuis tinker
+  affichera à tort le port 8087. Ne pas se fier à une URL d'image obtenue
+  via tinker pour diagnostiquer un problème d'affichage d'image ; toujours
+  vérifier via une vraie requête HTTP.
 - Migrations : `cd /server/azuriom && php artisan migrate --path=plugins/<plugin>/database/migrations --force`
 - Debug/fixtures : `php artisan tinker --execute="..."`
 - Pour simuler l'approbation d'un challenge sans navigateur (comme fait
@@ -204,6 +325,13 @@ java -Dsn3.baseUrl=http://127.0.0.1 -Dsn3.clientId=<id> \
 QA manuelle sans réseau/auth : lancer `mc.snakenest.launcher.devpreview.FullShellPreview`
 directement depuis l'IDE (argument `light` pour le thème clair, sinon sombre).
 
+Deux run configurations IntelliJ existent déjà sous `.idea/runConfigurations/`
+(`Launcher (test local)` et `Launcher (prod)`, module `launcher`,
+`mc.snakenest.launcher.Main`) — la première pointe vers
+`-Dsn3.baseUrl=http://127.0.0.1`, la seconde vers l'URL de prod. Pratique
+pour lancer/déboguer depuis l'IDE sans reconstruire la ligne de commande à
+la main.
+
 Des tests nommés `*LocalAzuriomSmokeTest` tapent le vrai serveur local si
 joignable (s'auto-skip sinon via `Assumptions`) — normal, pas une erreur si
 le serveur local n'est pas up sur une autre machine.
@@ -213,11 +341,18 @@ le serveur local n'est pas up sur une autre machine.
 - **Installation/lancement Minecraft réel jamais testé en pratique** (juste
   vérifié par lecture attentive de la vraie API des libs via `javap` — voir
   `game/README.md` pour le détail exact de ce qui est vérifié vs pas).
-- Page de paramètres par modpack : callback vide (`() -> {}`), pas implémentée.
+- Page de paramètres par modpack : implémentée (Gérer/Réparer/Désinstaller,
+  voir `ui.modpack.ModpackDetailPage`/`modpack.ModpackSettings`), plus un
+  callback vide.
 - Icônes : dessinées en Java2D (voir `ui.common.Icons`), pas de vrais assets
-  Lucide/Simple Icons bundlés. Twitch/Discord = glyphes génériques, PAS les
-  vrais logos (attention si un jour on veut les remplacer : bien vérifier les
-  licences des vrais assets avant de les ajouter).
+  Lucide/Simple Icons bundlés. Les raccourcis Twitch/Discord de la sidebar
+  ont été retirés (pas juste laissés en placeholder) pendant la session
+  UI/UX — plus de glyphes twitch()/discord() dans `Icons` du tout.
+- Sur l'instance locale, le modpack de test réel s'appelle **`test`** (pas
+  `aventure-ultime` comme documenté dans une version précédente de ce
+  fichier — vérifié via `php artisan tinker` : `aventure-ultime` n'existe
+  plus/pas dans la DB actuelle). C'est ce modpack `test` qui a servi à
+  reproduire et corriger le crash Forge (voir section 3).
 - Comparaison "taille manifest" vs "taille réellement occupée sur le disque"
   (visible sur la maquette 3) non implémentée — seule la taille du manifest
   est affichée.

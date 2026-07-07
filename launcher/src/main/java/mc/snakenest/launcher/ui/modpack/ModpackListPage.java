@@ -29,7 +29,8 @@ public final class ModpackListPage extends JPanel {
         list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
 
         for (ModpackSummary modpack : viewModel.modpacks()) {
-            ModpackCardView card = new ModpackCardView(modpack, viewModel.isInstalled(modpack), () -> viewModel.select(modpack));
+            ModpackCardView card = new ModpackCardView(modpack, viewModel.isInstalled(modpack), viewModel.logoFor(modpack),
+                    () -> viewModel.select(modpack), () -> viewModel.quickAction(modpack));
             card.setAlignmentX(Component.LEFT_ALIGNMENT);
             card.setMaximumSize(new java.awt.Dimension(Integer.MAX_VALUE, 84));
             list.add(card);

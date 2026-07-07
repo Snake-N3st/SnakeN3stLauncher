@@ -62,6 +62,9 @@ public final class ThemeController {
             } else {
                 UIManager.setLookAndFeel(new FlatLightLaf());
             }
+            // FlatLaf's default (4px) is barely perceptible - the account popover
+            // (ui.account.AccountPopover) needs to actually read as rounded.
+            UIManager.put("Popup.borderCornerRadius", 12);
         } catch (UnsupportedLookAndFeelException e) {
             Log.warn(ThemeController.class, "Could not apply FlatLaf theme: " + e.getMessage());
         }

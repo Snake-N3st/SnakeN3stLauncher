@@ -41,6 +41,20 @@ public final class LauncherAuthApiClient {
         return Uris.withQuery(baseUrl.resolve("/launcher-login"), Map.of("challenge", challengeToken));
     }
 
+    /** Unsigned - there's no player key yet at this point (used to brand the login window). */
+    public ClientInfo fetchClientInfo(String clientId) throws IOException, InterruptedException, LauncherApiException {
+        URI uri = Uris.withQuery(baseUrl.resolve("/api/launcher-auth/client"), Map.of("client_id", clientId));
+        JsonResponse response = http.get(uri);
+
+        if (response.statusCode() == 404) {
+            throw new LauncherApiException("Unknown client_id");
+        }
+        if (!response.isSuccess()) {
+            throw new LauncherApiException("Unexpected status fetching client info: " + response.statusCode());
+        }
+        return response.as(ClientInfo.class);
+    }
+
     public PollResult pollChallenge(String challengeToken) throws IOException, InterruptedException, LauncherApiException {
         JsonResponse response = http.get(baseUrl.resolve("/api/launcher-auth/challenge/" + challengeToken));
 
@@ -56,18 +70,19 @@ public final class LauncherAuthApiClient {
     }
 
     public String fetchUsername(PlayerSession session) throws IOException, InterruptedException, LauncherApiException {
-        return fetchPlayerInfo("/api/launcher-auth/player/username", session, UsernameResponse.class).username();
+        return fetchOne("/api/launcher-auth/player/username", session, UsernameResponse.class).username();
     }
 
-    public String fetchRole(PlayerSession session) throws IOException, InterruptedException, LauncherApiException {
-        return fetchPlayerInfo("/api/launcher-auth/player/role", session, RoleResponse.class).role();
+    /**
+     * Everything the account popover needs (username/role/email/avatar) in a
+     * single signed request - meant to be called once at login and once at
+     * startup, never every time the popover is opened.
+     */
+    public PlayerInfo fetchPlayerInfo(PlayerSession session) throws IOException, InterruptedException, LauncherApiException {
+        return fetchOne("/api/launcher-auth/player/info", session, PlayerInfo.class);
     }
 
-    public String fetchEmail(PlayerSession session) throws IOException, InterruptedException, LauncherApiException {
-        return fetchPlayerInfo("/api/launcher-auth/player/email", session, EmailResponse.class).email();
-    }
-
-    private <T> T fetchPlayerInfo(String path, PlayerSession session, Class<T> type)
+    private <T> T fetchOne(String path, PlayerSession session, Class<T> type)
             throws IOException, InterruptedException, LauncherApiException {
         SignedParams signed = SignedRequestSigner.sign(session);
         URI uri = Uris.withQuery(baseUrl.resolve(path), signed.toQueryParams());
@@ -86,11 +101,5 @@ public final class LauncherAuthApiClient {
     }
 
     private record UsernameResponse(String username) {
-    }
-
-    private record RoleResponse(String role) {
-    }
-
-    private record EmailResponse(String email) {
     }
 }

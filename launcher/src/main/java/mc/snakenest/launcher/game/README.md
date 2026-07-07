@@ -16,11 +16,32 @@ third-party library type:
   that imports `fr.theshark34.openlauncherlib.*`/`fr.flowarg.openlauncherlib.*`
   (GPL-3.0). `LaunchRequest` carries the player's Ed25519 seed (hex) to
   pass as `-Dsn3.token=...` - a secret, so its `toString()` redacts it
-  explicitly rather than using the default record one.
+  explicitly rather than using the default record one. It also carries
+  `memoryMb`/`extraJvmArgs` (see `modpack.ModpackSettings` - the "Gerer"
+  action on the modpack detail page); the launch service turns those into
+  `-Xmx<memoryMb>M` plus the raw extra args, appended before `-Dsn3.token`.
 
 - **`ModLoader`** — `VANILLA`/`FORGE`/`FABRIC`/`NEOFORGE`/`UNKNOWN`, shared
   with `modpack` (which parses it off the manifest's `loader` field) so the
-  four accepted values live in exactly one place.
+  four accepted values live in exactly one place. Vanilla installs are
+  supported like any other loader (a vanilla client just won't have the
+  in-game passwordless-login mod - see the class Javadoc on
+  `FlowUpdaterGameInstallService`) - don't reject a loader preemptively,
+  only if it actually turns out to fail.
+
+  **Forge/old-NeoForge version string gotcha**: FlowUpdater's own
+  `ForgeVersion`/`NeoForgeVersion` classes expect the loader version passed
+  in to already be `"<mcVersion>-<loaderBuild>"` (e.g. `"1.20.1-47.2.20"`)
+  for Forge (and for NeoForge's very first release, 1.20.1 only) - they
+  `split("-")` internally and index `data[1]`. Our manifest's
+  `loaderVersion` only carries the bare build number (e.g. `"47.2.20"`), so
+  passing it straight through crashed with
+  `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1`
+  inside `ForgeVersion`'s constructor. Fixed in
+  `FlowUpdaterGameInstallService` (`mcVersionPrefixed`/`neoForgeVersion`)
+  by prefixing `mcVersion + "-"` ourselves before calling into FlowUpdater,
+  rather than requiring the site to store the combined string - Fabric and
+  modern NeoForge versions are self-contained and passed through as-is.
 
 - **`OfflineUuids`** — derives the offline-mode UUID from a username using
   vanilla Minecraft's own convention (`UUID.nameUUIDFromBytes` of

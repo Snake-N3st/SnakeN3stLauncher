@@ -34,4 +34,13 @@ public final class LocalManifestStore {
         Path file = instanceDir.resolve(FILE_NAME);
         AtomicFiles.write(file, GSON.toJson(manifest).getBytes(StandardCharsets.UTF_8));
     }
+
+    /**
+     * Forgets the last-applied manifest, so the next {@code ModpackSyncEngine#sync}
+     * treats every file as needing a fresh download+verify - the "Reparer" action's
+     * whole mechanism (see {@code ui.modpack.ModpackDetailPage}).
+     */
+    public void clear(Path instanceDir) throws IOException {
+        Files.deleteIfExists(instanceDir.resolve(FILE_NAME));
+    }
 }

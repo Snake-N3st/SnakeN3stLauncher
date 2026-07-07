@@ -19,6 +19,8 @@ class LaunchRequestTest {
                 "1.20.4",
                 ModLoader.FORGE,
                 "49.0.30",
+                2048,
+                "",
                 secretToken
         );
 

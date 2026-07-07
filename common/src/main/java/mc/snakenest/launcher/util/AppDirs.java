@@ -85,4 +85,13 @@ public final class AppDirs {
     public Path configFile() {
         return root.resolve("config.json");
     }
+
+    /**
+     * Per-modpack launcher settings (memory allocation, custom JVM args) -
+     * deliberately outside {@link #instance}, so a "Reparer"/reinstall pass
+     * over the instance directory can never wipe it.
+     */
+    public Path modpackSettingsFile(String modpackSlug) {
+        return root.resolve("modpack-settings").resolve(modpackSlug + ".json");
+    }
 }

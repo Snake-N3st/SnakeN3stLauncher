@@ -5,16 +5,12 @@ import java.awt.BasicStroke;
 import java.awt.Graphics2D;
 import java.awt.geom.Ellipse2D;
 import java.awt.geom.Path2D;
-import java.awt.geom.RoundRectangle2D;
 
 /**
  * Hand-drawn (Java2D) stand-ins for a real bundled icon set. Generic UI
  * glyphs (play/document/gear/back-arrow/account/folder/download) are fine
  * as permanent placeholders - they're original shapes, not a copy of
- * anything. {@link #twitch} and {@link #discord} are deliberately generic
- * ("screen" / "chat bubble") rather than an attempt at the real trademarked
- * logos - swapping in the real Simple Icons marks (CC0) is a follow-up, not
- * done here.
+ * anything.
  */
 public final class Icons {
 
@@ -97,13 +93,19 @@ public final class Icons {
         return icon(size, (g, s) -> {
             g.setStroke(stroke(s));
             int pad = s / 6;
+            // Vertical extent (top/bottom below) is symmetric around 0.5*s on purpose - the
+            // previous version spanned 0.32..0.917 (center ~0.62), which read as noticeably
+            // low/off-center within the icon's own canvas.
+            float top = s * 0.2f;
+            float bottom = s * 0.8f;
+            float tabTop = s * 0.28f;
             Path2D folder = new Path2D.Float();
-            folder.moveTo(pad, s * 0.32);
-            folder.lineTo(pad, s - pad / 2.0);
-            folder.lineTo(s - pad, s - pad / 2.0);
-            folder.lineTo(s - pad, s * 0.4);
-            folder.lineTo(s / 2.0, s * 0.4);
-            folder.lineTo(s * 0.4, s * 0.32);
+            folder.moveTo(pad, top);
+            folder.lineTo(pad, bottom);
+            folder.lineTo(s - pad, bottom);
+            folder.lineTo(s - pad, tabTop);
+            folder.lineTo(s / 2.0, tabTop);
+            folder.lineTo(s * 0.4, top);
             folder.closePath();
             g.draw(folder);
         });
@@ -120,32 +122,6 @@ public final class Icons {
             arrowHead.lineTo(s * 0.68, s * 0.5);
             g.draw(arrowHead);
             g.drawLine(s / 5, s * 5 / 6, s * 4 / 5, s * 5 / 6);
-        });
-    }
-
-    /** Generic "screen" glyph, not the real Twitch mark - see class Javadoc. */
-    public static Icon twitch(int size) {
-        return icon(size, (g, s) -> {
-            g.setStroke(stroke(s));
-            int pad = s / 6;
-            g.draw(new RoundRectangle2D.Float(pad, pad, s - pad * 2f, s * 0.62f, s / 8f, s / 8f));
-            g.drawLine(s / 2, (int) (pad + s * 0.62), s / 2, s - pad / 2);
-            g.drawLine(s / 3, s - pad / 2, s * 2 / 3, s - pad / 2);
-        });
-    }
-
-    /** Generic "chat bubble" glyph, not the real Discord mark - see class Javadoc. */
-    public static Icon discord(int size) {
-        return icon(size, (g, s) -> {
-            g.setStroke(stroke(s));
-            int pad = s / 6;
-            RoundRectangle2D bubble = new RoundRectangle2D.Float(pad, pad, s - pad * 2f, s * 0.68f, s / 4f, s / 4f);
-            g.draw(bubble);
-            Path2D tail = new Path2D.Float();
-            tail.moveTo(s * 0.32, pad + s * 0.68);
-            tail.lineTo(s * 0.28, s - pad / 2.0);
-            tail.lineTo(s * 0.48, pad + s * 0.68);
-            g.draw(tail);
         });
     }
 

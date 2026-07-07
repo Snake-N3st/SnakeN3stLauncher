@@ -15,7 +15,6 @@ import mc.snakenest.launcher.ui.ThemeController;
 import mc.snakenest.launcher.util.AppDirs;
 import mc.snakenest.launcher.util.Log;
 
-import javax.swing.SwingUtilities;
 import java.net.URI;
 
 /**
@@ -56,6 +55,9 @@ public final class Main {
         LauncherApp app = new LauncherApp(dirs, baseUrl, clientId, configStore, themeController,
                 authApi, modpackApi, newsApi, keyStorage, gameInstallService, gameLaunchService);
 
-        SwingUtilities.invokeLater(app::start);
+        // Not wrapped in invokeLater: start() fetches client/player branding over the
+        // network before constructing any window, and must do so off the EDT to avoid
+        // freezing it - see LauncherApp#start's Javadoc.
+        app.start();
     }
 }

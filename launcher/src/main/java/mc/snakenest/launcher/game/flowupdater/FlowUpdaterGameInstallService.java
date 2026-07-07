@@ -20,6 +20,13 @@ import mc.snakenest.launcher.game.InstallStep;
  * (GPL-3.0) - everything else depends only on {@link GameInstallService}.
  * Downloads vanilla Minecraft and, if requested, installs Forge/Fabric/NeoForge.
  *
+ * <p>Vanilla installs are supported as-is - the in-game auth bridge (the
+ * "universalpacket" mod, Fabric+Forge only, see {@code LAUNCHER_INTEGRATION.md}
+ * section 5) won't be present for a vanilla install, so that player won't get
+ * the passwordless in-game login, but nothing about the install/launch itself
+ * is broken by that. Only reject a mod loader here if it actually fails to
+ * install/launch, not preemptively.
+ *
  * <p><b>Not yet exercised against a real Minecraft install in this
  * environment</b> (that would mean downloading a full game distribution) -
  * every method signature used here was individually confirmed against the
@@ -57,11 +64,34 @@ public final class FlowUpdaterGameInstallService implements GameInstallService {
     private IModLoaderVersion buildModLoaderVersion(InstallRequest request) {
         return switch (request.loader()) {
             case VANILLA -> null;
-            case FORGE -> new ForgeVersionBuilder().withForgeVersion(request.loaderVersion()).build();
+            case FORGE -> new ForgeVersionBuilder().withForgeVersion(mcVersionPrefixed(request)).build();
             case FABRIC -> new FabricVersionBuilder().withFabricVersion(request.loaderVersion()).build();
-            case NEOFORGE -> new NeoForgeVersionBuilder().withNeoForgeVersion(request.loaderVersion()).build();
+            case NEOFORGE -> new NeoForgeVersionBuilder().withNeoForgeVersion(neoForgeVersion(request)).build();
             case UNKNOWN -> throw new IllegalStateException("Unknown mod loader - the manifest declared a loader value this launcher build doesn't recognize");
         };
+    }
+
+    /**
+     * FlowUpdater's {@code ForgeVersion} splits its input on {@code "-"} and expects exactly
+     * {@code "<mcVersion>-<forgeBuild>"} (e.g. {@code "1.20.1-47.2.20"}) - our manifest's
+     * {@code loaderVersion} only carries the forge build number on its own (e.g.
+     * {@code "47.2.20"}), which crashed FlowUpdater with an
+     * {@code ArrayIndexOutOfBoundsException} (it indexes {@code data[1]} after splitting).
+     * Prefixing it here, rather than requiring the site to store the combined string, keeps
+     * "what does loaderVersion mean" the same across Forge/Fabric/NeoForge.
+     */
+    private String mcVersionPrefixed(InstallRequest request) {
+        String prefix = request.mcVersion() + "-";
+        return request.loaderVersion().startsWith(prefix) ? request.loaderVersion() : prefix + request.loaderVersion();
+    }
+
+    /**
+     * Only the very first NeoForge release (for 1.20.1, back when it had just forked from
+     * Forge) used the same {@code "<mcVersion>-<build>"} format as old Forge; every later
+     * NeoForge version is self-contained (e.g. {@code "20.4.237"}) and must be passed as-is.
+     */
+    private String neoForgeVersion(InstallRequest request) {
+        return "1.20.1".equals(request.mcVersion()) ? mcVersionPrefixed(request) : request.loaderVersion();
     }
 
     private IProgressCallback adaptCallback(GameInstallListener listener) {

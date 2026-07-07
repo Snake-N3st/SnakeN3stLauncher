@@ -8,6 +8,7 @@ import mc.snakenest.launcher.game.GameLaunchService;
 import mc.snakenest.launcher.game.LaunchRequest;
 import mc.snakenest.launcher.game.ModLoader;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -33,12 +34,23 @@ public final class OpenLauncherLibGameLaunchService implements GameLaunchService
             AuthInfos authInfos = new AuthInfos(request.username(), "0", request.offlineUuid().toString());
 
             NoFramework noFramework = new NoFramework(request.instanceDir(), authInfos, GameFolder.FLOW_UPDATER);
-            noFramework.setAdditionalVmArgs(List.of("-Dsn3.token=" + request.sn3TokenHex()));
+            noFramework.setAdditionalVmArgs(buildVmArgs(request));
 
             return noFramework.launch(request.mcVersion(), request.loaderVersion(), toNoFrameworkModLoader(request.loader()));
         } catch (Exception e) {
             throw new GameLaunchException("Could not launch " + request.mcVersion() + " (" + request.loader() + ")", e);
         }
+    }
+
+    /** Memory allocation + custom args are per-modpack preferences (see {@code modpack.ModpackSettings}). */
+    private List<String> buildVmArgs(LaunchRequest request) {
+        List<String> args = new ArrayList<>();
+        args.add("-Xmx" + request.memoryMb() + "M");
+        if (request.extraJvmArgs() != null && !request.extraJvmArgs().isBlank()) {
+            args.addAll(List.of(request.extraJvmArgs().trim().split("\\s+")));
+        }
+        args.add("-Dsn3.token=" + request.sn3TokenHex());
+        return args;
     }
 
     private NoFramework.ModLoader toNoFrameworkModLoader(ModLoader loader) {

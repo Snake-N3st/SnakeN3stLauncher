@@ -1,6 +1,5 @@
 package mc.snakenest.launcher.ui;
 
-import mc.snakenest.launcher.ui.common.Buttons;
 import mc.snakenest.launcher.ui.common.IconButton;
 import mc.snakenest.launcher.ui.common.Icons;
 
@@ -18,31 +17,31 @@ import java.util.function.Consumer;
 
 /**
  * Left navigation column: Modpacks / Actualites (mutually exclusive, like
- * tabs), Twitch / Discord (external links, not pages), Settings pinned to
- * the bottom.
+ * tabs), Settings pinned to the bottom. No external links (Twitch/Discord)
+ * live here anymore - removed as clutter, see the top-level plan/CONTEXT.md.
  */
 final class Sidebar extends JPanel {
 
-    private static final int ICON_SIZE = 22;
-    private static final int WIDTH = 64;
+    // The two main nav buttons read as too small even after an earlier size pass - bumped again.
+    // The Settings (gear) icon stays as a smaller, secondary utility icon on purpose.
+    private static final int NAV_ICON_SIZE = 34;
+    private static final int SETTINGS_ICON_SIZE = 26;
+    private static final int WIDTH = 82;
 
     private final Map<NavTarget, IconButton> navButtons = new EnumMap<>(NavTarget.class);
 
-    Sidebar(Consumer<NavTarget> onNavigate, Runnable onOpenTwitch, Runnable onOpenDiscord) {
+    Sidebar(Consumer<NavTarget> onNavigate) {
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
         setBorder(new MatteBorder(0, 0, 0, 1, new Color(0, 0, 0, 40)));
         setPreferredSize(new java.awt.Dimension(WIDTH, 0));
 
         ButtonGroup navGroup = new ButtonGroup();
-        addNavButton(NavTarget.MODPACKS, Icons.play(ICON_SIZE), "Modpacks", navGroup, onNavigate);
-        addNavButton(NavTarget.NEWS, Icons.document(ICON_SIZE), "Actualites", navGroup, onNavigate);
-
-        add(Box.createVerticalStrut(24));
-        addCentered(Buttons.flatIcon(Icons.twitch(ICON_SIZE), "Twitch", onOpenTwitch));
-        addCentered(Buttons.flatIcon(Icons.discord(ICON_SIZE), "Discord", onOpenDiscord));
+        add(Box.createVerticalStrut(12));
+        addNavButton(NavTarget.MODPACKS, Icons.play(NAV_ICON_SIZE), "Modpacks", navGroup, onNavigate);
+        addNavButton(NavTarget.NEWS, Icons.document(NAV_ICON_SIZE), "Actualites", navGroup, onNavigate);
 
         add(Box.createVerticalGlue());
-        addNavButton(NavTarget.SETTINGS, Icons.gear(ICON_SIZE), "Parametres", navGroup, onNavigate);
+        addNavButton(NavTarget.SETTINGS, Icons.gear(SETTINGS_ICON_SIZE), "Parametres", navGroup, onNavigate);
         add(Box.createVerticalStrut(12));
     }
 

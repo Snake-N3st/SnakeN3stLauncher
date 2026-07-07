@@ -7,6 +7,7 @@ import javax.swing.border.MatteBorder;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Dimension;
+import java.awt.image.BufferedImage;
 import java.util.function.Consumer;
 
 /**
@@ -19,20 +20,22 @@ public final class LauncherFrame extends JFrame {
     private final Sidebar sidebar;
     private final TopBar topBar;
     private final ContentArea contentArea;
+    private final LogoPanel logoPanel;
 
     /**
      * @param onOpenAccount receives the account button itself, to anchor a popover under it
      *                      (see {@code ui.account.AccountPopover})
      */
-    public LauncherFrame(Runnable onOpenTwitch, Runnable onOpenDiscord, Consumer<JComponent> onOpenAccount) {
+    public LauncherFrame(Consumer<JComponent> onOpenAccount) {
         super("SnakeN3st Launcher");
 
-        this.sidebar = new Sidebar(this::navigate, onOpenTwitch, onOpenDiscord);
+        this.sidebar = new Sidebar(this::navigate);
         this.topBar = new TopBar(onOpenAccount);
         this.contentArea = new ContentArea();
+        this.logoPanel = new LogoPanel();
 
         JPanel header = new JPanel(new BorderLayout());
-        header.add(new LogoPanel(), BorderLayout.WEST);
+        header.add(logoPanel, BorderLayout.WEST);
         header.add(topBar, BorderLayout.CENTER);
         header.setBorder(new MatteBorder(0, 0, 1, 0, new Color(0, 0, 0, 40)));
 
@@ -58,6 +61,16 @@ public final class LauncherFrame extends JFrame {
     /** Lets a page (e.g. a modpack's detail view) show a back button and a custom title instead of the sidebar-driven one. */
     public void showBackButton(String title, Runnable onBack) {
         topBar.showBackButton(title, onBack);
+    }
+
+    /** Safe to call with {@code null} (reverts to the placeholder mark). */
+    public void setLogo(BufferedImage image) {
+        logoPanel.setImage(image);
+    }
+
+    /** Safe to call with {@code null} (reverts to the generic account icon). */
+    public void setAccountAvatar(BufferedImage image) {
+        topBar.setAccountAvatar(image);
     }
 
     private void navigate(NavTarget target) {

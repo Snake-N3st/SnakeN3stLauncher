@@ -5,10 +5,30 @@ grant: the launcher gets a short-lived challenge, the user approves it in
 their browser, the launcher polls until it receives a one-time Ed25519
 private key.
 
-- **`LauncherAuthApiClient`** — the 5 endpoints of the `launcher-auth`
-  plugin: `requestChallenge`, `pollChallenge`, `loginUrl` (builds the
-  `/launcher-login?challenge=...` URL to open), and the three signed
-  player-info lookups (`fetchUsername`/`fetchRole`/`fetchEmail`).
+- **`LauncherAuthApiClient`** — the endpoints of the `launcher-auth` plugin:
+  `requestChallenge`, `pollChallenge`, `loginUrl` (builds the
+  `/launcher-login?challenge=...` URL to open), `fetchClientInfo` (the
+  client's name/logo, unsigned - used to brand the login window before any
+  session exists), `fetchUsername` (used on its own right before launching
+  a game, to detect a username change - see `LauncherApp#warnIfUsernameChanged`),
+  and `fetchPlayerInfo` (username+role+email+avatar in one signed call).
+
+  `fetchPlayerInfo` used to be three separate calls
+  (`fetchRole`/`fetchEmail` alongside `fetchUsername`), each re-signed and
+  re-sent every time the account popover was opened. Consolidated into one
+  endpoint (`/api/launcher-auth/player/info`, see `LAUNCHER_INTEGRATION.md`
+  section 6) specifically so `LauncherApp` can fetch it once - at login and
+  at startup - and cache the result, rather than hitting the network every
+  time the user clicks the account icon.
+
+- **`ClientInfo`** — the `fetchClientInfo` result (`name`, nullable `image`
+  URL). Decoding that URL into an actual image is `ui.common.RemoteImages`'
+  job, not this package's - `ClientInfo` only carries the raw API response.
+
+- **`PlayerInfo`** — the `fetchPlayerInfo` result (`username`, `role`,
+  `email`, nullable `avatar` URL). Same split as `ClientInfo`: this record
+  only carries the raw response, `ui.common.RemoteImages` decodes the
+  avatar URL into an image.
 
 - **`SignedRequestSigner`** / **`SignedParams`** — the one signing recipe
   every player-info and modpacks call shares: sign
