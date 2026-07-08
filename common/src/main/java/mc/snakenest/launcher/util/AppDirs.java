@@ -1,5 +1,8 @@
 package mc.snakenest.launcher.util;
 
+import java.io.File;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -43,7 +46,28 @@ public final class AppDirs {
     /** Package-visible, pure version of {@link #resolveRoot()} - exercised directly by tests. */
     static Path resolveRootForTesting(String dataDirOverride, String osName, String home, String windowsAppData) {
         if (dataDirOverride != null && !dataDirOverride.isBlank()) {
-            return Paths.get(dataDirOverride);
+            String dRoot = System.getProperty("sn3.dataRoot","");
+            return switch (dRoot) {
+                case "jar" -> {
+                    try {
+                        // Récupère le dossier contenant le JAR en cours d'exécution
+                        String pathToJar = AppDirs.class
+                                .getProtectionDomain()
+                                .getCodeSource()
+                                .getLocation()
+                                .getPath();
+
+                        String jarDirectory = new File(pathToJar).getParentFile().getPath();
+                        jarDirectory = URLDecoder.decode(jarDirectory, StandardCharsets.UTF_8);
+
+                        yield Paths.get(jarDirectory, dataDirOverride);
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+                case "home" -> Paths.get(System.getProperty("user.home"), dataDirOverride);
+                default -> Paths.get(dataDirOverride);
+            };
         }
 
         String os = osName.toLowerCase();
