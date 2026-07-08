@@ -60,17 +60,93 @@ detail view (install/update progress, description, "Demarrer").
   clears it back to false via `setUpdateAvailable`/`setCardUpdateAvailable`
   the same way `setInstalled(true)` already did. "Annuler" (`Icons.cancel`,
   an X) while `setBusy(true)` (a sync/install is running - clicking calls
-  `onCancel`), or "Arreter" (`Icons.stop`, a filled square) while
+  `onCancel`), "Arreter" (`Icons.stop`, a filled square) while
   `setRunning(true)` (the game process is running - clicking calls
-  `onStop`). One button, one relevant action at a time. `setBusy(false)`/
-  `setRunning(false)` only revert to idle if the state is still
-  `BUSY`/`RUNNING` respectively - a successful install immediately followed
-  by launching the game calls `setRunning(true)` *before* the caller's
-  `finally` block gets to call `setBusy(false)`, and without that guard the
-  busy-cleanup would clobber the freshly-set running state back to idle.
-  Install/sync progress arrives asynchronously (`setStatus`/`setProgress`
-  hop to the EDT themselves, safe to call from any thread) since installing
-  a modpack runs off the UI thread. The settings/folder icons use
+  `onStop`), or "Tuer" (`Icons.skull`) while `setStopping(true)` (clicking
+  calls `onKill`). One button, one relevant action at a time. `setBusy(false)`
+  only reverts to idle if the state is still `BUSY`; `setRunning(false)`
+  reverts to idle from either `RUNNING` or `STOPPING` - a successful install
+  immediately followed by launching the game calls `setRunning(true)`
+  *before* the caller's `finally` block gets to call `setBusy(false)`, and
+  without that first guard the busy-cleanup would clobber the freshly-set
+  running state back to idle. Install/sync progress arrives asynchronously
+  (`setStatus`/`setProgress` hop to the EDT themselves, safe to call from
+  any thread) since installing a modpack runs off the UI thread.
+
+  **"Tuer"/force-kill** (`LauncherApp#stopGame`/`#killGame`): `onStop`
+  (`Process#destroy()`, SIGTERM on Linux/macOS) only *asks* the game to
+  exit - a native graphics/mod cleanup hang on shutdown can leave it running
+  with no visible feedback, previously recourse-free short of a manual
+  `kill -9` from a terminal. Clicking "Arreter" now immediately flips the
+  button to "Tuer" (`setStopping(true)`, a no-op unless the button is
+  currently `RUNNING` - safe to call unconditionally on whichever page/card
+  happens to be on screen) so the user has an explicit, immediate
+  `destroyForcibly()` (SIGKILL, unconditional) available rather than waiting
+  - `stopGame` also starts its own background force-kill after a grace
+  period as a backstop in case they don't.
+
+  **A brand new `ModpackDetailPage`/card always starts `IDLE`** - neither
+  has any way to know an install is in progress or a game is already
+  running/being stopped for its modpack, since `installed`/`updateAvailable`
+  are the only state `ModpackDetailViewModel`/`ModpackListViewModel` carry
+  in from the outside. That's fine the *first* time (the live instance
+  already gets `setBusy`/`setRunning`/`setStopping` pushed to it directly as
+  it happens) but not on a *subsequent* build of the same page/card -
+  `LauncherApp#showModpackDetail`/`#loadModpackList` rerun on every
+  "Actualiser" and every reopen from the list, each building a brand new
+  page/card from scratch. Installing/downloading a modpack used to have no
+  tracking for this at all (unlike running, which at least had a slug
+  tracked) - refreshing or reopening a modpack's page mid-download silently
+  reverted the button to "Demarrer" even though it was actively
+  downloading, which read as the whole button-state system being
+  unreliable rather than one specific untracked case.
+
+  Fixed by `LauncherApp#active`: one field (an `ActiveModpack` record - slug
+  + which of `INSTALLING`/`RUNNING`/`STOPPING` + whatever `Future`/`Process`
+  goes with that) replacing four previously-independent fields that could
+  each only describe *part* of "what's happening right now" and had to be
+  kept in sync by hand at every call site - installing had no field at all,
+  which is exactly how this bug happened in the first place. Every method
+  that starts/advances/ends an activity replaces this one reference
+  wholesale (`installAndLaunch`, `launchGame` on install success,
+  `stopGame`, the exit callback, `clearActiveIfInstalling` on
+  failure/cancellation) instead of touching several fields separately -
+  `LauncherApp#restoreActiveState`/`#restoreActiveCardState` are the one
+  place a freshly built page/card reads it back, covering all three
+  activities the same way rather than a bespoke check per state that's easy
+  to forget writing for the next new one. Also closes a subtler race: the
+  activity is recorded *before* the background task is even submitted, not
+  after - otherwise a background task fast enough to finish before that
+  line ran on the caller's thread could have its own (correct, newer) state
+  silently overwritten by the caller's stale write.
+
+  **The same staleness bug existed everywhere else in the install/launch
+  chain, not just the exit callback** - the next report was "I had to
+  refresh for the button to go from Annuler to Arreter", i.e. a live push
+  mid-flow (not just the two endpoints above) silently failed to reach the
+  page actually on screen. `doInstallAndLaunch`/`syncModpackFiles`/
+  `installGame`/`launchGame`/`warnIfUsernameChanged` used to all take a
+  `ModpackDetailPage` parameter, captured *once* at the very start of
+  `installAndLaunch`/`quickInstallAndLaunch`/`repairModpack` and threaded
+  through every subsequent call - every `setStatus`/`setProgress`/
+  `setRunning`/`setBusy` push along the way (a whole install can easily run
+  for tens of seconds to minutes) went to that one snapshot, which stopped
+  being the visible page the moment the user refreshed or left-and-reopened
+  mid-install.
+
+  Fixed by giving `ModpackDetailPage` a stable `slug()` (from
+  `ModpackDetailViewModel`) and replacing every one of those parameters
+  with `LauncherApp#withDetailPage(slug, action)`: looks up
+  `currentDetailPage` fresh *at the moment of each individual push* and
+  only applies `action` if it's still showing `slug` - a no-op otherwise
+  (page rebuilt, navigated away, or never open to begin with), same "safe
+  no-op" philosophy as everywhere else in this class. This is strictly more
+  correct than the old "detailPage != null" check too: that only asked "was
+  a page open when this operation *started*", not "is a page open *now*, and
+  is it still the right one" - a failure reported after the user had
+  navigated away used to silently vanish onto an invisible stale page
+  instead of falling back to the error dialog (`LauncherApp#isDetailPageShowing`
+  now drives that fallback decision correctly for the same reason). The settings/folder icons use
   `ui.common.Buttons#iconButton` (visible background at rest, generous
   margin so they read closer to the main button's height), not `#flatIcon`
   (background only on hover, smaller) - the latter made them look like bare

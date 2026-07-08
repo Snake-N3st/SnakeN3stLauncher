@@ -90,11 +90,33 @@ final class LauncherApp {
     private PlayerInfo playerInfo;
     private BufferedImage playerAvatar;
     private LauncherFrame shellFrame;
-    // Whichever sync/install task is currently running for the open detail page - a single slot
-    // is enough since only one can be in flight at a time (the button that would start another is
-    // itself busy/disabled-by-state while one is running).
-    private volatile java.util.concurrent.Future<?> currentInstallTask;
-    private volatile Process runningGameProcess;
+
+    /** The one thing this launcher can be doing to a modpack at a time - never more than one in flight. */
+    private enum Activity { INSTALLING, RUNNING, STOPPING }
+
+    /**
+     * One immutable snapshot of "what the launcher is currently doing, and to which modpack" -
+     * {@code null} when nothing is. Replaces what used to be four separate fields
+     * ({@code currentInstallTask}, {@code runningGameProcess}, {@code runningModpackSlug},
+     * {@code stopRequestedForRunningGame}) that were each set/cleared independently by whichever
+     * method happened to touch them.
+     *
+     * <p>That split was the actual bug behind "the button still says Demarrer while a modpack is
+     * downloading": {@code RUNNING} had a slug tracked (so a freshly (re)built page/card could at
+     * least restore that one state), but installing/downloading never got the same treatment -
+     * there was no field at all recording "an install is in progress for slug X", so
+     * {@code showModpackDetail}/{@code loadModpackList} had nothing to check and always defaulted
+     * a new page/card to idle. Every method that used to touch one of the four old fields now
+     * replaces this single reference wholesale instead - one atomic fact, read back by the one
+     * {@link #restoreActiveState}/{@link #restoreActiveCardState} pair for every activity the
+     * same way, instead of a bespoke "if slug matches, call setX" check that's easy to forget
+     * writing for the next new state.
+     */
+    private record ActiveModpack(String slug, Activity activity, java.util.concurrent.Future<?> installTask, Process gameProcess) {
+    }
+
+    private volatile ActiveModpack active;
+
     // The list currently shown, if any - lets card-state pushes (setCardBusy/Running/Installed)
     // reach the right ModpackCardView regardless of whether that modpack's detail page is also
     // open. Replaced wholesale on every (re)load, same "stale reference is a harmless no-op"
@@ -373,9 +395,11 @@ final class LauncherApp {
                             modpack -> showModpackDetail(frame, section, modpack),
                             this::quickInstallAndLaunch,
                             this::cancelInstall,
-                            this::stopGame);
+                            this::stopGame,
+                            this::killGame);
                     currentListViewModel = viewModel;
                     section.replaceList(new ModpackListPage(viewModel));
+                    restoreActiveCardState(viewModel);
                 });
             } catch (Exception e) {
                 Log.warn(LauncherApp.class, "Could not load modpacks: " + e.getMessage());
@@ -454,6 +478,7 @@ final class LauncherApp {
                 boolean updateAvailable = isUpdateAvailable(modpack.slug(), manifest.version());
                 SwingUtilities.invokeLater(() -> {
                     ModpackDetailViewModel viewModel = new ModpackDetailViewModel(
+                            modpack.slug(),
                             modpack.name(),
                             modpack.description(),
                             manifest.changelog(),
@@ -468,11 +493,17 @@ final class LauncherApp {
                             () -> uninstallModpack(modpack),
                             this::cancelInstall,
                             this::stopGame,
+                            this::killGame,
                             newSettings -> modpackSettingsStore.save(modpack.slug(), newSettings),
                             () -> openFolder(dirs.instance(modpack.slug())),
                             back
                     );
                     ModpackDetailPage detail = new ModpackDetailPage(viewModel);
+                    // A brand new page always starts idle (ModpackDetailPage has no way to know
+                    // otherwise) - restore whatever's genuinely happening to this modpack right
+                    // now, since this runs on every open AND every "Actualiser"/back-then-reopen,
+                    // not just the very first time this modpack's page is shown.
+                    restoreActiveState(modpack.slug(), detail);
                     currentDetailPage = detail;
                     section.showDetail(detail);
                 });
@@ -493,23 +524,108 @@ final class LauncherApp {
     // Set right before install/launch starts, so its async progress callbacks have somewhere to report to.
     private volatile ModpackDetailPage currentDetailPage;
 
-    private void installAndLaunch(ModpackSummary modpack, ModpackManifest manifest) {
-        ModpackDetailPage detailPage = currentDetailPage;
-        if (detailPage != null) {
-            detailPage.setBusy(true);
+    /**
+     * Applies whichever activity {@link #active} says is genuinely happening to {@code slug}
+     * right now to a freshly built {@code ModpackDetailPage} - called every time one is built
+     * ({@code showModpackDetail}, on open/refresh/reopen), covering installing/running/stopping
+     * the same way instead of a separate check per activity.
+     */
+    private void restoreActiveState(String slug, ModpackDetailPage detail) {
+        ActiveModpack current = active;
+        if (current == null || !current.slug().equals(slug)) {
+            return;
         }
-        setCardBusy(modpack.slug(), true);
+        switch (current.activity()) {
+            case INSTALLING -> detail.setBusy(true);
+            case RUNNING -> detail.setRunning(true);
+            case STOPPING -> {
+                detail.setRunning(true);
+                detail.setStopping(true);
+            }
+        }
+    }
 
-        currentInstallTask = backgroundExecutor.submit(() -> {
+    /** Same as {@link #restoreActiveState}, for a freshly built {@code ModpackListPage}'s cards. */
+    private void restoreActiveCardState(ModpackListViewModel viewModel) {
+        ActiveModpack current = active;
+        if (current == null) {
+            return;
+        }
+        switch (current.activity()) {
+            case INSTALLING -> viewModel.setCardBusy(current.slug(), true);
+            case RUNNING -> viewModel.setCardRunning(current.slug(), true);
+            case STOPPING -> {
+                viewModel.setCardRunning(current.slug(), true);
+                viewModel.setCardStopping(current.slug(), true);
+            }
+        }
+    }
+
+    /**
+     * Clears {@link #active} back to {@code null}, but only if it's still the {@code INSTALLING}
+     * episode for {@code slug} - a no-op if it already moved on to {@code RUNNING} (a successful
+     * install immediately followed by launching the game) or was never this slug's to begin with.
+     * Called wherever an install/repair ends without ever reaching {@link #launchGame} (cancelled
+     * or failed) - the success-into-launch path clears nothing here since {@link #launchGame}
+     * already replaced {@link #active} with the {@code RUNNING} snapshot by the time this would run.
+     */
+    private void clearActiveIfInstalling(String slug) {
+        ActiveModpack current = active;
+        if (current != null && current.activity() == Activity.INSTALLING && current.slug().equals(slug)) {
+            active = null;
+        }
+    }
+
+    /**
+     * Fills in {@code task} on the just-created {@code INSTALLING} snapshot for {@code slug} -
+     * called right after {@code backgroundExecutor.submit(...)} returns, not before, since the
+     * {@link java.util.concurrent.Future} doesn't exist until then. {@link #active} is still set
+     * to {@code INSTALLING} (with a {@code null} task) *before* submitting, not after - if it were
+     * set only after, the background task itself could in theory already have run far enough to
+     * move {@link #active} on to {@code RUNNING} (or clear it, on a very fast failure) by the time
+     * the submitting thread got back around to writing it, and that stale write would silently
+     * clobber the newer, correct state. Guarded here the same way, so attaching the task can never
+     * do that either: a no-op unless {@link #active} is still exactly the bare snapshot this method
+     * is trying to complete.
+     */
+    private void attachInstallTask(String slug, java.util.concurrent.Future<?> task) {
+        ActiveModpack current = active;
+        if (current != null && current.activity() == Activity.INSTALLING && current.slug().equals(slug) && current.installTask() == null) {
+            active = new ActiveModpack(slug, Activity.INSTALLING, task, null);
+        }
+    }
+
+    /**
+     * Applies {@code action} to the currently open detail page, but only if it's still showing
+     * {@code slug} - a page rebuilt since {@code slug}'s install/launch started (e.g. the user hit
+     * "Actualiser", or left and reopened it) is a different {@code ModpackDetailPage} instance, and
+     * a reference to the old one captured once at the start of a long-running install/launch would
+     * silently never reach whatever's actually on screen now. Every live push during that chain
+     * goes through here instead of threading a page reference through it, so this fix applies
+     * everywhere at once (progress/status text, the busy/running/stopping button state, ...)
+     * rather than one call site at a time.
+     */
+    private void withDetailPage(String slug, java.util.function.Consumer<ModpackDetailPage> action) {
+        ModpackDetailPage page = currentDetailPage;
+        if (page != null && slug.equals(page.slug())) {
+            action.accept(page);
+        }
+    }
+
+    private void installAndLaunch(ModpackSummary modpack, ModpackManifest manifest) {
+        withDetailPage(modpack.slug(), page -> page.setBusy(true));
+        setCardBusy(modpack.slug(), true);
+        active = new ActiveModpack(modpack.slug(), Activity.INSTALLING, null, null);
+
+        java.util.concurrent.Future<?> task = backgroundExecutor.submit(() -> {
             try {
-                doInstallAndLaunch(modpack, manifest, detailPage);
+                doInstallAndLaunch(modpack, manifest);
             } finally {
-                if (detailPage != null) {
-                    detailPage.setBusy(false);
-                }
+                withDetailPage(modpack.slug(), page -> page.setBusy(false));
                 setCardBusy(modpack.slug(), false);
             }
         });
+        attachInstallTask(modpack.slug(), task);
     }
 
     /**
@@ -520,11 +636,16 @@ final class LauncherApp {
      */
     private void quickInstallAndLaunch(ModpackSummary modpack) {
         setCardBusy(modpack.slug(), true);
-        currentInstallTask = backgroundExecutor.submit(() -> {
+        active = new ActiveModpack(modpack.slug(), Activity.INSTALLING, null, null);
+        java.util.concurrent.Future<?> task = backgroundExecutor.submit(() -> {
             try {
                 ModpackManifest manifest = modpackApi.getManifest(modpack.slug(), null, session);
-                doInstallAndLaunch(modpack, manifest, null);
+                doInstallAndLaunch(modpack, manifest);
             } catch (Exception e) {
+                // Covers a failure in the getManifest() call above too, not just doInstallAndLaunch
+                // - that one already clears active itself when it's the one that fails/cancels,
+                // this is a harmless no-op in that case (already cleared, or moved on to RUNNING).
+                clearActiveIfInstalling(modpack.slug());
                 if (isCancellation(e)) {
                     Log.warn(LauncherApp.class, "Quick install/launch cancelled for " + modpack.slug());
                 } else {
@@ -535,6 +656,7 @@ final class LauncherApp {
                 setCardBusy(modpack.slug(), false);
             }
         });
+        attachInstallTask(modpack.slug(), task);
     }
 
     /** No-op if the given slug's card isn't in the currently-shown list (e.g. it was refreshed away, or its detail page is the only thing open). */
@@ -542,6 +664,14 @@ final class LauncherApp {
         ModpackListViewModel list = currentListViewModel;
         if (list != null) {
             list.setCardBusy(slug, busy);
+        }
+    }
+
+    /** Same as {@link #setCardBusy}, for the "Tuer" (force-kill) state. */
+    private void setCardStopping(String slug, boolean stopping) {
+        ModpackListViewModel list = currentListViewModel;
+        if (list != null) {
+            list.setCardStopping(slug, stopping);
         }
     }
 
@@ -571,53 +701,103 @@ final class LauncherApp {
 
     /** Interrupts whichever sync/install/repair task is currently running for the open detail page - the "Annuler" button. */
     private void cancelInstall() {
-        java.util.concurrent.Future<?> task = currentInstallTask;
-        if (task != null) {
-            task.cancel(true);
+        ActiveModpack current = active;
+        if (current != null && current.activity() == Activity.INSTALLING && current.installTask() != null) {
+            current.installTask().cancel(true);
         }
     }
 
-    /** Kills the running game process - the "Arreter" button. */
+    private static final int FORCE_KILL_TIMEOUT_SECONDS = 10;
+
+    /**
+     * Asks the running game process to exit - the "Arreter" button. {@code destroy()} (SIGTERM on
+     * Linux/macOS) asks the JVM to shut down but doesn't guarantee it will - a native
+     * graphics/mod cleanup hang on shutdown leaves the process alive with no visible feedback.
+     * Immediately flips the button to "Tuer" ({@link #killGame}, a manual force-kill the user can
+     * click right away rather than waiting) and, as a backstop in case they don't notice/click
+     * it, escalates to {@code destroyForcibly()} on its own after a grace period if the process
+     * still hasn't exited by then - off the EDT (this runs from the button's action listener)
+     * since {@code waitFor} blocks.
+     */
     private void stopGame() {
-        Process process = runningGameProcess;
-        if (process != null) {
-            process.destroy();
+        ActiveModpack current = active;
+        if (current == null || current.activity() != Activity.RUNNING) {
+            return;
         }
+        Process process = current.gameProcess();
+        active = new ActiveModpack(current.slug(), Activity.STOPPING, null, process);
+        withDetailPage(current.slug(), page -> page.setStopping(true));
+        setCardStopping(current.slug(), true);
+        process.destroy();
+        backgroundExecutor.execute(() -> {
+            try {
+                if (!process.waitFor(FORCE_KILL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS) && process.isAlive()) {
+                    Log.warn(LauncherApp.class, "Game process ignored destroy() for " + FORCE_KILL_TIMEOUT_SECONDS + "s, forcing kill");
+                    process.destroyForcibly();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
     }
 
     /**
-     * The shared body of {@link #installAndLaunch}/{@link #quickInstallAndLaunch} - {@code
-     * detailPage} may be {@code null} (the quick-action path from the list has no detail page
-     * to report to). A failure here must never be silent just because {@code detailPage} is
-     * {@code null} - it used to only get logged in that case, which meant the quick-action
-     * button could fail with no visible feedback at all; falls back to a dialog instead.
+     * Force-kills the running game process outright - the "Tuer" button, shown after "Arreter"
+     * has already been clicked once ({@link #stopGame}). {@code destroyForcibly()} is SIGKILL on
+     * Linux/macOS: unconditional, no cooperation required from the target process, so there's
+     * nothing to wait for or escalate here unlike {@link #stopGame} - verified against a real
+     * process that traps and ignores {@code SIGTERM} (what plain {@code destroy()} sends).
      */
-    private void doInstallAndLaunch(ModpackSummary modpack, ModpackManifest manifest, ModpackDetailPage detailPage) {
+    private void killGame() {
+        ActiveModpack current = active;
+        if (current != null && current.gameProcess() != null) {
+            current.gameProcess().destroyForcibly();
+        }
+    }
+
+    /** Whether the currently open detail page (if any) is showing {@code slug} right now - see {@link #withDetailPage}. */
+    private boolean isDetailPageShowing(String slug) {
+        ModpackDetailPage page = currentDetailPage;
+        return page != null && slug.equals(page.slug());
+    }
+
+    /**
+     * The shared body of {@link #installAndLaunch}/{@link #quickInstallAndLaunch}. A failure here
+     * must never be silent just because this modpack's detail page isn't the one currently on
+     * screen (started from the list, or the user navigated away since) - falls back to a dialog
+     * in that case instead, via {@link #isDetailPageShowing}.
+     */
+    private void doInstallAndLaunch(ModpackSummary modpack, ModpackManifest manifest) {
         try {
-            syncModpackFiles(modpack, manifest, detailPage);
-            installGame(modpack, manifest, detailPage);
-            if (detailPage != null) {
-                detailPage.setInstalled(true);
-                detailPage.setUpdateAvailable(false);
-            }
+            syncModpackFiles(modpack, manifest);
+            installGame(modpack, manifest);
+            withDetailPage(modpack.slug(), page -> {
+                page.setInstalled(true);
+                page.setUpdateAvailable(false);
+            });
             setCardInstalled(modpack.slug(), true);
             setCardUpdateAvailable(modpack.slug(), false);
             String username = authApi.fetchUsername(session);
-            warnIfUsernameChanged(username, detailPage);
-            launchGame(modpack, manifest, username, detailPage);
+            warnIfUsernameChanged(modpack.slug(), username);
+            launchGame(modpack, manifest, username);
         } catch (Exception e) {
+            // Only actually clears anything if we didn't reach launchGame above - that already
+            // moved active on to RUNNING, so this is a no-op in that case (see its Javadoc).
+            clearActiveIfInstalling(modpack.slug());
             if (isCancellation(e)) {
                 Log.warn(LauncherApp.class, "Install/launch cancelled for " + modpack.slug());
-                if (detailPage != null) {
-                    detailPage.setStatus("Annulé.");
-                    detailPage.setProgress(-1);
-                }
+                withDetailPage(modpack.slug(), page -> {
+                    page.setStatus("Annulé.");
+                    page.setProgress(-1);
+                });
                 return;
             }
             Log.error(LauncherApp.class, "Install/launch failed for " + modpack.slug(), e);
-            if (detailPage != null) {
-                detailPage.setError("Erreur : " + e.getMessage());
-                detailPage.setProgress(-1);
+            if (isDetailPageShowing(modpack.slug())) {
+                withDetailPage(modpack.slug(), page -> {
+                    page.setError("Erreur : " + e.getMessage());
+                    page.setProgress(-1);
+                });
             } else {
                 showErrorDialog(modpack, e);
             }
@@ -637,63 +817,61 @@ final class LauncherApp {
 
     /** Clears the locally-recorded manifest so the next sync re-verifies/re-downloads everything, then re-installs (no launch). */
     private void repairModpack(ModpackSummary modpack, ModpackManifest manifest) {
-        ModpackDetailPage detailPage = currentDetailPage;
-        if (detailPage != null) {
-            detailPage.setBusy(true);
-        }
+        withDetailPage(modpack.slug(), page -> page.setBusy(true));
         setCardBusy(modpack.slug(), true);
-        currentInstallTask = backgroundExecutor.submit(() -> {
+        active = new ActiveModpack(modpack.slug(), Activity.INSTALLING, null, null);
+        java.util.concurrent.Future<?> task = backgroundExecutor.submit(() -> {
             try {
                 new LocalManifestStore().clear(dirs.instance(modpack.slug()));
-                syncModpackFiles(modpack, manifest, detailPage);
-                installGame(modpack, manifest, detailPage);
-                if (detailPage != null) {
-                    detailPage.setInstalled(true);
-                    detailPage.setUpdateAvailable(false);
-                    detailPage.setStatus("Réparation terminée.");
-                    detailPage.setProgress(-1);
-                }
+                syncModpackFiles(modpack, manifest);
+                installGame(modpack, manifest);
+                withDetailPage(modpack.slug(), page -> {
+                    page.setInstalled(true);
+                    page.setUpdateAvailable(false);
+                    page.setStatus("Réparation terminée.");
+                    page.setProgress(-1);
+                });
                 setCardInstalled(modpack.slug(), true);
                 setCardUpdateAvailable(modpack.slug(), false);
             } catch (Exception e) {
                 if (isCancellation(e)) {
                     Log.warn(LauncherApp.class, "Repair cancelled for " + modpack.slug());
-                    if (detailPage != null) {
-                        detailPage.setStatus("Annulé.");
-                        detailPage.setProgress(-1);
-                    }
+                    withDetailPage(modpack.slug(), page -> {
+                        page.setStatus("Annulé.");
+                        page.setProgress(-1);
+                    });
                 } else {
                     Log.error(LauncherApp.class, "Repair failed for " + modpack.slug(), e);
-                    if (detailPage != null) {
-                        detailPage.setError("Erreur : " + e.getMessage());
-                        detailPage.setProgress(-1);
-                    }
+                    withDetailPage(modpack.slug(), page -> {
+                        page.setError("Erreur : " + e.getMessage());
+                        page.setProgress(-1);
+                    });
                 }
             } finally {
-                if (detailPage != null) {
-                    detailPage.setBusy(false);
-                }
+                // Repair never launches the game, so unlike doInstallAndLaunch's clear this one
+                // is unconditional (still guarded by clearActiveIfInstalling itself) - there's no
+                // RUNNING transition here to avoid clobbering.
+                clearActiveIfInstalling(modpack.slug());
+                withDetailPage(modpack.slug(), page -> page.setBusy(false));
                 setCardBusy(modpack.slug(), false);
             }
         });
+        attachInstallTask(modpack.slug(), task);
     }
 
     /** Deletes the instance directory entirely - the confirmation dialog already happened in the UI. */
     private void uninstallModpack(ModpackSummary modpack) {
-        ModpackDetailPage detailPage = currentDetailPage;
         backgroundExecutor.execute(() -> {
             try {
                 deleteRecursively(dirs.instance(modpack.slug()));
-                if (detailPage != null) {
-                    detailPage.setInstalled(false);
-                    detailPage.setStatus("Désinstallé.");
-                }
+                withDetailPage(modpack.slug(), page -> {
+                    page.setInstalled(false);
+                    page.setStatus("Désinstallé.");
+                });
                 setCardInstalled(modpack.slug(), false);
             } catch (Exception e) {
                 Log.error(LauncherApp.class, "Uninstall failed for " + modpack.slug(), e);
-                if (detailPage != null) {
-                    detailPage.setError("Erreur : " + e.getMessage());
-                }
+                withDetailPage(modpack.slug(), page -> page.setError("Erreur : " + e.getMessage()));
             }
         });
     }
@@ -715,29 +893,25 @@ final class LauncherApp {
      * startup), this session's UUID won't match earlier ones, which matters
      * for per-world player data. Just a warning, not a blocker.
      */
-    private void warnIfUsernameChanged(String currentUsername, ModpackDetailPage detailPage) {
+    private void warnIfUsernameChanged(String slug, String currentUsername) {
         if (playerInfo == null || playerInfo.username() == null || playerInfo.username().equals(currentUsername)) {
             return;
         }
         String message = "Pseudo changé depuis la connexion (" + playerInfo.username() + " -> " + currentUsername + ") : l'UUID hors-ligne sera différent.";
         Log.warn(LauncherApp.class, message);
-        if (detailPage != null) {
-            detailPage.setStatus(message);
-        }
+        withDetailPage(slug, page -> page.setStatus(message));
     }
 
-    private void syncModpackFiles(ModpackSummary modpack, ModpackManifest manifest, ModpackDetailPage detailPage) throws Exception {
-        if (detailPage != null) {
-            detailPage.setStatus("Synchronisation des fichiers...");
-            detailPage.setProgress(0);
-        }
+    private void syncModpackFiles(ModpackSummary modpack, ModpackManifest manifest) throws Exception {
+        withDetailPage(modpack.slug(), page -> {
+            page.setStatus("Synchronisation des fichiers...");
+            page.setProgress(0);
+        });
         var syncEngine = new ModpackSyncEngine(new mc.snakenest.launcher.modpack.ModpackFileDownloader(modpackApi), new LocalManifestStore());
         syncEngine.sync(modpack.slug(), dirs.instance(modpack.slug()), manifest, session, new mc.snakenest.launcher.modpack.SyncProgressListener() {
             @Override
             public void onFileStarted(String path, long size) {
-                if (detailPage != null) {
-                    detailPage.setStatus("Téléchargement : " + path);
-                }
+                withDetailPage(modpack.slug(), page -> page.setStatus("Téléchargement : " + path));
             }
 
             @Override
@@ -750,32 +924,26 @@ final class LauncherApp {
         });
     }
 
-    private void installGame(ModpackSummary modpack, ModpackManifest manifest, ModpackDetailPage detailPage) throws Exception {
-        if (detailPage != null) {
-            detailPage.setStatus("Installation du jeu...");
-        }
+    private void installGame(ModpackSummary modpack, ModpackManifest manifest) throws Exception {
+        withDetailPage(modpack.slug(), page -> page.setStatus("Installation du jeu..."));
         InstallRequest request = new InstallRequest(manifest.mcVersion(), manifest.modLoader(), manifest.loaderVersion(), dirs.instance(modpack.slug()));
         gameInstallService.install(request, new GameInstallListener() {
             @Override
             public void onStepStarted(InstallStep step) {
-                if (detailPage != null) {
-                    detailPage.setStatus(describeInstallStep(step));
-                }
+                withDetailPage(modpack.slug(), page -> page.setStatus(describeInstallStep(step)));
             }
 
             @Override
             public void onProgress(long bytesDownloaded, long bytesTotal) {
-                if (detailPage != null && bytesTotal > 0) {
-                    detailPage.setProgress((double) bytesDownloaded / bytesTotal);
+                if (bytesTotal > 0) {
+                    withDetailPage(modpack.slug(), page -> page.setProgress((double) bytesDownloaded / bytesTotal));
                 }
             }
         });
-        if (detailPage != null) {
-            detailPage.setProgress(-1);
-        }
+        withDetailPage(modpack.slug(), page -> page.setProgress(-1));
     }
 
-    private void launchGame(ModpackSummary modpack, ModpackManifest manifest, String username, ModpackDetailPage detailPage) throws Exception {
+    private void launchGame(ModpackSummary modpack, ModpackManifest manifest, String username) throws Exception {
         ModpackSettings settings = modpackSettingsStore.load(modpack.slug());
         LaunchRequest request = new LaunchRequest(
                 username,
@@ -789,21 +957,23 @@ final class LauncherApp {
                 session.key().seedHex()
         );
         Process process = gameLaunchService.launch(request);
-        runningGameProcess = process;
-        if (detailPage != null) {
-            detailPage.setRunning(true);
-        }
+        active = new ActiveModpack(modpack.slug(), Activity.RUNNING, null, process);
+        withDetailPage(modpack.slug(), page -> page.setRunning(true));
         setCardRunning(modpack.slug(), true);
         if (discordPresence != null) {
             discordPresence.setPlaying(modpack.name());
         }
         process.onExit().thenRun(() -> {
-            if (runningGameProcess == process) {
-                runningGameProcess = null;
+            ActiveModpack current = active;
+            if (current != null && current.gameProcess() == process) {
+                active = null;
             }
-            if (detailPage != null) {
-                detailPage.setRunning(false);
-            }
+            // withDetailPage, not a closed-over detailPage parameter: the game can easily still
+            // be running minutes after launch, long enough for the user to refresh/leave-and-
+            // reopen this modpack's page in the meantime (a brand new ModpackDetailPage instance
+            // every time) - looking up the current page by slug here means this always reaches
+            // whichever instance is actually on screen, not whichever one existed at launch time.
+            withDetailPage(modpack.slug(), page -> page.setRunning(false));
             setCardRunning(modpack.slug(), false);
             if (discordPresence != null) {
                 discordPresence.setBrowsing();

@@ -112,6 +112,36 @@ utiliser `-Duser.home=/chemin/isolé` sur la ligne de commande Java, jamais
 Lues par `Main` ET `BootstrapMain` ; bootstrap les retransmet telles quelles
 au jar complet qu'il lance.
 
+`sn3.dataDir` (optionnel) — remplace entièrement l'emplacement par défaut
+des données du launcher (`util.AppDirs`, normalement
+`~/.local/share/snake-n3st` sur Linux) par un dossier arbitraire. Sert
+précisément à séparer les données d'un run de test de celles d'une
+installation réelle sur la même machine (config, clé chiffrée, jars
+`bootstrap` en cache, modpacks installés) — sans ça, lancer un `launcher`
+de test écrase/mélange les données réelles. Lu par `common.util.AppDirs`,
+donc automatiquement valable pour `bootstrap` ET `launcher` sans dupliquer
+la logique ; `BootstrapMain#spawnLauncher` le retransmet explicitement au
+jar complet qu'il lance (un process enfant n'hérite PAS des `-D` du parent
+tout seul, contrairement aux variables d'environnement — piège vérifié en
+pratique, `sn3.baseUrl`/`sn3.clientId` doivent déjà être retransmis pour la
+même raison). La run configuration IntelliJ "Launcher (test local)" (voir
+section 7) l'utilise pour pointer vers
+`~/.local/share/snake-n3st-test` — "Launcher (prod)" n'a volontairement
+pas cette propriété, donc utilise le vrai dossier par défaut.
+
+**Alternative sans ligne de commande** : `bootstrap/BootstrapMain#loadPropertiesFileNextToJar`
+charge un fichier `bootstrap.properties` s'il est présent à côté du jar
+`bootstrap` au démarrage, et pose chacune de ses clés comme propriété
+système JVM (sauf si déjà définie via `-D`, qui reste prioritaire) —
+pensé pour un jar à double-clic ou un raccourci bureau/association de
+fichier, qui n'ont justement pas de ligne de commande où ajouter des `-D`.
+Vérifié en conditions réelles (vrai jar, zéro argument `-D`, les trois
+propriétés lues depuis le fichier et correctement retransmises au
+`launcher` lancé). Un vrai `bootstrap.properties` (avec un vrai
+`client_id`) ne doit jamais être commité — même logique que `.clientId`,
+`.gitignore` l'exclut déjà (`/bootstrap.properties` à la racine, et
+`bootstrap/target/` de toute façon ignoré).
+
 ## 3. Décisions techniques et pièges à connaître
 
 - **Ed25519** : `net.i2p.crypto:eddsa` (licence **CC0**, pas Apache comme je
@@ -767,14 +797,19 @@ jamais de `height=`/`width=` bruts, toujours ce `style=` inline.
 
 ```bash
 mvn clean package                 # build les 3 modules + jars shadés
-mvn test                          # 68 tests (common=17, bootstrap=3, launcher=48)
+mvn test                          # tests (common, bootstrap, launcher)
 
-java -Dsn3.baseUrl=http://127.0.0.1 -Dsn3.clientId=<id> \
+java -Dsn3.baseUrl=http://127.0.0.1 -Dsn3.clientId=<id> -Dsn3.dataDir=~/.local/share/snake-n3st-test \
      -jar launcher/target/snaken3st-launcher-*.jar
 
-java -Dsn3.baseUrl=http://127.0.0.1 -Dsn3.clientId=<id> \
+java -Dsn3.baseUrl=http://127.0.0.1 -Dsn3.clientId=<id> -Dsn3.dataDir=~/.local/share/snake-n3st-test \
      -jar bootstrap/target/snaken3st-launcher-bootstrap-*.jar
 ```
+
+`-Dsn3.dataDir` est optionnel - l'omettre revient au dossier par défaut de
+l'OS (`util.AppDirs`). L'ajouter pour un run de test évite que ses données
+(clé, config, modpacks installés) ne se mélangent avec une vraie
+installation sur la même machine.
 
 QA manuelle sans réseau/auth : lancer `mc.snakenest.launcher.devpreview.FullShellPreview`
 directement depuis l'IDE (argument `light` pour le thème clair, sinon sombre).
@@ -782,9 +817,11 @@ directement depuis l'IDE (argument `light` pour le thème clair, sinon sombre).
 Deux run configurations IntelliJ existent déjà sous `.idea/runConfigurations/`
 (`Launcher (test local)` et `Launcher (prod)`, module `launcher`,
 `mc.snakenest.launcher.Main`) — la première pointe vers
-`-Dsn3.baseUrl=http://127.0.0.1`, la seconde vers l'URL de prod. Pratique
-pour lancer/déboguer depuis l'IDE sans reconstruire la ligne de commande à
-la main.
+`-Dsn3.baseUrl=http://127.0.0.1` et `-Dsn3.dataDir=~/.local/share/snake-n3st-test`
+(dossier de données séparé), la seconde vers l'URL de prod et le dossier de
+données par défaut (pas de `-Dsn3.dataDir`, volontairement). Pratique pour
+lancer/déboguer depuis l'IDE sans reconstruire la ligne de commande à la
+main, et sans risquer d'écraser de vraies données en testant.
 
 Des tests nommés `*LocalAzuriomSmokeTest` tapent le vrai serveur local si
 joignable (s'auto-skip sinon via `Assumptions`) — normal, pas une erreur si

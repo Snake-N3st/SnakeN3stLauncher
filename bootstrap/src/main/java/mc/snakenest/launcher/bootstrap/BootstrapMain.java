@@ -5,11 +5,13 @@ import mc.snakenest.launcher.util.Log;
 import mc.snakenest.launcher.util.Sha256;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 
 /**
  * Entry point of the bootstrap module: check the site for the latest
@@ -17,18 +19,33 @@ import java.util.List;
  * as a new process, then exit immediately. Never runs two JVMs at once -
  * see the plan's "Deux artefacts, un seul JVM actif à la fois".
  *
- * <p>Reads the same {@code sn3.baseUrl}/{@code sn3.clientId} JVM system
- * properties as the launcher itself, and passes them straight through to
- * the process it spawns.
+ * <p>Reads the same {@code sn3.baseUrl}/{@code sn3.clientId}/{@code
+ * sn3.dataDir} JVM system properties as the launcher itself, and passes
+ * them straight through to the process it spawns ({@link #spawnLauncher}) -
+ * a spawned child process does <b>not</b> automatically inherit its
+ * parent's {@code -D} JVM properties (unlike OS environment variables), so
+ * this forwarding is required, not just a convenience: without it, a
+ * {@code -Dsn3.dataDir=...} passed to this process alone would silently
+ * fail to reach the launcher it spawns, which would fall back to the
+ * default OS data directory instead.
+ *
+ * <p>{@link #loadPropertiesFileNextToJar()} runs first and loads every key
+ * from a {@code bootstrap.properties} file next to this jar (if any) as a
+ * JVM system property - for a double-clickable jar or a desktop
+ * shortcut/file association, there's no launch command line to add
+ * {@code -D} arguments to at all.
  */
 public final class BootstrapMain {
 
     private static final String DEFAULT_BASE_URL = "https://snake-n3st.fr";
+    private static final String PROPERTIES_FILE_NAME = "bootstrap.properties";
 
     private BootstrapMain() {
     }
 
     public static void main(String[] args) {
+        loadPropertiesFileNextToJar();
+
         AppDirs dirs = new AppDirs();
         Log.initialize(dirs);
 
@@ -58,6 +75,55 @@ public final class BootstrapMain {
             close(splash);
             BootstrapSplash.showFatalError("Impossible de démarrer le launcher : " + e.getMessage());
             System.exit(1);
+        }
+    }
+
+    /**
+     * Best-effort: if a {@value #PROPERTIES_FILE_NAME} file sits next to this jar, every key in
+     * it becomes a JVM system property, unless already set via {@code -D} (an explicit {@code -D}
+     * always wins over the file, same "most specific override wins" precedence as
+     * {@code common.util.ClientIds}). Runs before {@link AppDirs}/{@link Log} even exist, since
+     * {@code sn3.dataDir} might itself come from this file - a failure here can only be reported
+     * to stderr, not the file logger, and is never fatal (falls back to whatever {@code -D}
+     * arguments/defaults already apply, exactly as if the file didn't exist).
+     */
+    private static void loadPropertiesFileNextToJar() {
+        Path jarDirectory = jarDirectory();
+        if (jarDirectory == null) {
+            return;
+        }
+        Path propertiesFile = jarDirectory.resolve(PROPERTIES_FILE_NAME);
+        if (!Files.isRegularFile(propertiesFile)) {
+            return;
+        }
+        Properties properties = new Properties();
+        try (InputStream in = Files.newInputStream(propertiesFile)) {
+            properties.load(in);
+        } catch (IOException e) {
+            System.err.println("Could not read " + propertiesFile + ": " + e.getMessage());
+            return;
+        }
+        for (String key : properties.stringPropertyNames()) {
+            if (System.getProperty(key) == null) {
+                System.setProperty(key, properties.getProperty(key));
+            }
+        }
+    }
+
+    /**
+     * The directory this jar itself lives in, or {@code null} if that can't be determined (e.g.
+     * an unusual classloader setup) - best-effort only, {@link #loadPropertiesFileNextToJar()}
+     * simply finds nothing in that case, same as if the properties file didn't exist. Running
+     * unpackaged (an IDE, {@code target/classes}) resolves to that classes directory itself,
+     * which is a harmless, occasionally convenient place to drop a test properties file.
+     */
+    private static Path jarDirectory() {
+        try {
+            URI location = BootstrapMain.class.getProtectionDomain().getCodeSource().getLocation().toURI();
+            Path path = Path.of(location);
+            return Files.isDirectory(path) ? path : path.getParent();
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -106,6 +172,14 @@ public final class BootstrapMain {
         command.add(javaBinary());
         command.add("-Dsn3.baseUrl=" + baseUrl);
         command.add("-Dsn3.clientId=" + clientId);
+        // Not read by this class directly (only AppDirs cares), but a spawned process doesn't
+        // inherit its parent's JVM properties on its own - forwarded here so a
+        // -Dsn3.dataDir=... passed to bootstrap actually reaches the launcher it spawns too,
+        // keeping them pointed at the same (possibly test/dev-only) data directory.
+        String dataDir = System.getProperty("sn3.dataDir");
+        if (dataDir != null && !dataDir.isBlank()) {
+            command.add("-Dsn3.dataDir=" + dataDir);
+        }
         command.add("-jar");
         command.add(jar.toString());
 

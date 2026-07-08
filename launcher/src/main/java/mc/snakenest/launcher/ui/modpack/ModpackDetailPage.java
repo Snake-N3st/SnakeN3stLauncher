@@ -31,9 +31,10 @@ import java.awt.Font;
  *
  * <p>The main button reads differently depending on {@link ButtonState}:
  * "Télécharger"/"Démarrer" at rest (depending on {@code installed}),
- * "Annuler" while a sync/install is in flight ({@link #setBusy}), or
- * "Arrêter" while the game process is running ({@link #setRunning}) - one
- * button, three possible actions, never more than one relevant at a time.
+ * "Annuler" while a sync/install is in flight ({@link #setBusy}), "Arrêter"
+ * while the game process is running ({@link #setRunning}), or "Tuer" once
+ * "Arrêter" has already been clicked once ({@link #setStopping}) - one
+ * button, never more than one relevant action at a time.
  */
 public final class ModpackDetailPage extends JPanel {
 
@@ -41,11 +42,12 @@ public final class ModpackDetailPage extends JPanel {
     // sat too small (both the icon itself and the button around it) compared to the main button.
     private static final int FOOTER_ICON_SIZE = 26;
 
-    private enum ButtonState { IDLE, BUSY, RUNNING }
+    private enum ButtonState { IDLE, BUSY, RUNNING, STOPPING }
 
     private final JButton demarrerButton;
     private final JLabel statusLabel = new JLabel(" ");
     private final JProgressBar progressBar = new JProgressBar(0, 100);
+    private final String slug;
     private boolean installed;
     private boolean updateAvailable;
     private ButtonState buttonState = ButtonState.IDLE;
@@ -55,6 +57,7 @@ public final class ModpackDetailPage extends JPanel {
     private ModpackSettings currentSettings;
 
     public ModpackDetailPage(ModpackDetailViewModel viewModel) {
+        this.slug = viewModel.slug();
         this.installed = viewModel.installed();
         this.updateAvailable = viewModel.updateAvailable();
         this.currentSettings = viewModel.settings();
@@ -105,6 +108,7 @@ public final class ModpackDetailPage extends JPanel {
                 case IDLE -> viewModel.onDemarrer().run();
                 case BUSY -> viewModel.onCancel().run();
                 case RUNNING -> viewModel.onStop().run();
+                case STOPPING -> viewModel.onKill().run();
             }
         });
         applyButtonLabel();
@@ -202,7 +206,21 @@ public final class ModpackDetailPage extends JPanel {
                 demarrerButton.setText("Arrêter");
                 demarrerButton.setIcon(Icons.stop(18));
             }
+            case STOPPING -> {
+                demarrerButton.setText("Tuer");
+                demarrerButton.setIcon(Icons.skull(18));
+            }
         }
+    }
+
+    /**
+     * This page's modpack, stable for its whole lifetime - lets a caller check whether this page
+     * is still the one currently on screen for a given modpack before pushing a live update to
+     * it (see {@code LauncherApp#withDetailPage}), instead of assuming a page reference captured
+     * earlier is still the one visible now.
+     */
+    public String slug() {
+        return slug;
     }
 
     /** Switches the button from "Télécharger" to "Démarrer"/"Mettre à jour" once install finishes. Safe from any thread. */
@@ -243,12 +261,44 @@ public final class ModpackDetailPage extends JPanel {
         });
     }
 
-    /** While the game is running, the button reads "Arrêter" (kills the game process) instead of its resting label. Safe from any thread. */
+    /**
+     * While the game is running, the button reads "Arrêter" (stops the game process) instead of
+     * its resting label. Safe from any thread.
+     *
+     * <p>{@code setRunning(false)} resets to idle from either {@code RUNNING} or
+     * {@code STOPPING} - once the game process has actually exited, there's nothing left to stop
+     * OR kill, regardless of which of those two states the button was in right before that.
+     */
     public void setRunning(boolean running) {
         SwingUtilities.invokeLater(() -> {
             if (running) {
                 buttonState = ButtonState.RUNNING;
-            } else if (buttonState == ButtonState.RUNNING) {
+            } else if (buttonState == ButtonState.RUNNING || buttonState == ButtonState.STOPPING) {
+                buttonState = ButtonState.IDLE;
+            }
+            demarrerButton.setEnabled(true);
+            applyButtonLabel();
+        });
+    }
+
+    /**
+     * While the button reads "Tuer" (force-kills the game process instead of asking it nicely to
+     * exit) - see {@code LauncherApp#stopGame}, entered by clicking "Arrêter" once already. Safe
+     * from any thread.
+     *
+     * <p>{@code setStopping(true)} only actually transitions the button if it's currently
+     * {@code RUNNING} - "Tuer" only ever makes sense as a follow-up to "Arrêter", so this is a
+     * safe no-op to call unconditionally on whichever {@code ModpackDetailPage} happens to be on
+     * screen (it might belong to an unrelated, non-running modpack) rather than needing to check
+     * first whether it's even showing the modpack whose game is being stopped.
+     */
+    public void setStopping(boolean stopping) {
+        SwingUtilities.invokeLater(() -> {
+            if (stopping) {
+                if (buttonState == ButtonState.RUNNING) {
+                    buttonState = ButtonState.STOPPING;
+                }
+            } else if (buttonState == ButtonState.STOPPING) {
                 buttonState = ButtonState.IDLE;
             }
             demarrerButton.setEnabled(true);

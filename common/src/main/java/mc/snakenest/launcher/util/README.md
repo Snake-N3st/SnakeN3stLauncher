@@ -10,6 +10,13 @@ Nothing here talks to the network, to Swing, or to any third-party library.
   - macOS: `~/Library/Application Support/snake-n3st`
   - Windows: `%APPDATA%\snake-n3st`
 
+  `-Dsn3.dataDir=...` overrides all of the above with an arbitrary
+  directory, read by both `bootstrap` and `launcher` (both go through this
+  same class) - mainly to point a test/dev run at its own throwaway
+  directory, completely separate from a real install's config/keys/cached
+  jars/modpacks on the same machine. Verified end-to-end against the real
+  packaged `bootstrap` jar, not just unit-tested in isolation.
+
   Layout under that root:
   ```
   snake-n3st/
@@ -37,18 +44,8 @@ Nothing here talks to the network, to Swing, or to any third-party library.
   or a URL with a query string** (the API's query strings carry
   `signature`/`publicKey`) — log the request path only.
 
-- **`ClientIds`** — resolves `sn3.clientId`: the JVM system property if set
-  (valid, non-blank), otherwise a `.clientId` file bundled as a classpath
-  resource (`resolve(null)`/`resolve("")` both fall through to it). Lets an
-  operator ship a turnkey single-client build of `bootstrap`/`launcher` -
-  drop a `.clientId` file under this module's own `src/main/resources/`
-  before running `mvn package` (it gets shaded into *both* final jars
-  automatically, since both already bundle `common`'s classes/resources)
-  and neither jar needs a `-Dsn3.clientId=...` argument at all anymore.
-  **Never commit a real one** - this repo is public/GPL-3.0, and a real
-  client id identifies a specific deployment; `.gitignore` already excludes
-  `**/src/main/resources/.clientId` for exactly this reason. Validates the
-  resolved value against the shape the site actually issues
-  (`LauncherClient::boot()` server-side, Laravel's `Str::random(32)`: 32
-  alphanumeric characters) with some slack on length, as a sanity check
-  against an empty/corrupted file rather than strict format enforcement.
+Note: `ClientIds` (resolves `sn3.clientId`, falling back to a bundled
+`.clientId` resource) lives in `bootstrap.ClientIds`, not here - it only
+needs to run before `bootstrap` spawns `launcher` (which always receives
+`-Dsn3.clientId=...` explicitly forwarded by then), so it doesn't need to be
+shared via `common`. See `bootstrap/README.md`.

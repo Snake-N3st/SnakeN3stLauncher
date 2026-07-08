@@ -126,8 +126,14 @@ Small reusable pieces, not specific to any one page:
   bundled raster/SVG set (none exists yet). Follows the current theme's
   foreground color automatically, so light/dark switching is "free". No
   Twitch/Discord glyphs anymore - the sidebar shortcuts they were for got
-  removed. `cancel()`/`stop()` (X / filled square) back the detail page's
-  and the modpack list's Annuler/Arrêter button states.
+  removed. `cancel()`/`stop()`/`skull()` (X / filled square / a small
+  outlined skull with filled eye sockets, nose, and teeth - drawn like
+  `gear()`/`folder()`, not filled, so those read as solid dots against it
+  without needing to know the surrounding background color) back the detail
+  page's and the modpack list's Annuler/Arrêter/Tuer button states - see
+  `ui.modpack` README for the "Tuer" force-kill state itself. Legibility at
+  the actual usage sizes (18-28px) confirmed by rendering and screenshotting
+  it directly rather than eyeballing the drawing code alone.
 
   `refresh()` is the one exception to "hand-drawn Java2D shape" in this
   class: it draws the "⭮" glyph (U+2B6E) via `Graphics2D#drawString`

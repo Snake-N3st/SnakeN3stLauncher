@@ -9,12 +9,18 @@ import java.nio.file.Paths;
  * goes through here rather than building one by hand, so the layout only
  * needs to change in one place.
  *
- * <p>Root, by OS:
+ * <p>Root, by OS (unless overridden - see below):
  * <ul>
  *   <li>Linux: {@code $HOME/.local/share/snake-n3st}</li>
  *   <li>macOS: {@code ~/Library/Application Support/snake-n3st}</li>
  *   <li>Windows: {@code %APPDATA%\snake-n3st}</li>
  * </ul>
+ *
+ * <p>The {@code -Dsn3.dataDir=...} JVM system property overrides all of the above with an
+ * arbitrary directory, read by both {@code bootstrap} and {@code launcher} (both go through this
+ * same class) - mainly to keep a test/dev instance's data (config, keys, cached jars, installed
+ * modpacks) completely separate from a real one on the same machine, without them ever
+ * interfering with each other.
  */
 public final class AppDirs {
 
@@ -30,11 +36,16 @@ public final class AppDirs {
     }
 
     static Path resolveRoot() {
-        return resolveRootForTesting(System.getProperty("os.name", ""), System.getProperty("user.home"), System.getenv("APPDATA"));
+        return resolveRootForTesting(System.getProperty("sn3.dataDir"),
+                System.getProperty("os.name", ""), System.getProperty("user.home"), System.getenv("APPDATA"));
     }
 
     /** Package-visible, pure version of {@link #resolveRoot()} - exercised directly by tests. */
-    static Path resolveRootForTesting(String osName, String home, String windowsAppData) {
+    static Path resolveRootForTesting(String dataDirOverride, String osName, String home, String windowsAppData) {
+        if (dataDirOverride != null && !dataDirOverride.isBlank()) {
+            return Paths.get(dataDirOverride);
+        }
+
         String os = osName.toLowerCase();
 
         if (os.contains("win")) {

@@ -76,7 +76,8 @@ public final class FullShellPreview {
                 modpack -> showDetail(frame, sectionHolder[0], modpack),
                 modpack -> System.out.println("[preview] would quick install/launch " + modpack.slug()),
                 () -> System.out.println("[preview] would cancel the in-flight quick action"),
-                () -> System.out.println("[preview] would stop the quick-launched game")));
+                () -> System.out.println("[preview] would stop the quick-launched game"),
+                () -> System.out.println("[preview] would force-kill the quick-launched game")));
         sectionHolder[0] = new ModpackSectionPage(listPage);
         frame.addPage(NavTarget.MODPACKS, sectionHolder[0]);
 
@@ -99,6 +100,7 @@ public final class FullShellPreview {
             frame.navigateTo(NavTarget.MODPACKS);
         };
         ModpackDetailViewModel viewModel = new ModpackDetailViewModel(
+                modpack.slug(),
                 modpack.name(),
                 modpack.description(),
                 "Premiere version stable.",
@@ -113,6 +115,7 @@ public final class FullShellPreview {
                 () -> System.out.println("[preview] would uninstall " + modpack.slug()),
                 () -> System.out.println("[preview] would cancel the install for " + modpack.slug()),
                 () -> System.out.println("[preview] would stop the running game for " + modpack.slug()),
+                () -> System.out.println("[preview] would force-kill the running game for " + modpack.slug()),
                 newSettings -> System.out.println("[preview] would save settings " + newSettings),
                 () -> System.out.println("[preview] would open the instance folder"),
                 back

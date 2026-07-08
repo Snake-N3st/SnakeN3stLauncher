@@ -13,7 +13,6 @@ import mc.snakenest.launcher.news.NewsApiClient;
 import mc.snakenest.launcher.net.HttpJsonClient;
 import mc.snakenest.launcher.ui.ThemeController;
 import mc.snakenest.launcher.util.AppDirs;
-import mc.snakenest.launcher.util.ClientIds;
 import mc.snakenest.launcher.util.Log;
 
 import java.net.URI;
@@ -21,11 +20,16 @@ import java.net.URI;
 /**
  * Composition root: builds every dependency and hands them to
  * {@link LauncherApp}. Deliberately holds no logic of its own beyond
- * reading the two JVM properties the bootstrap (or a developer, by hand)
- * sets - see {@code sn3.baseUrl}/{@code sn3.clientId} in the top-level plan.
- * {@code sn3.clientId} itself goes through {@link mc.snakenest.launcher.util.ClientIds#resolve}
- * first, so a turnkey single-client build (a bundled {@code .clientId} resource, see
- * {@code util.README.md}) needs no JVM argument at all.
+ * reading the JVM properties the bootstrap (or a developer, by hand)
+ * sets - {@code sn3.baseUrl}/{@code sn3.clientId} directly below, plus
+ * {@code sn3.dataDir} (optional, overrides where all launcher data lives on
+ * disk - see {@link mc.snakenest.launcher.util.AppDirs}) read transitively
+ * via {@link AppDirs#AppDirs()}.
+ * No {@code .clientId}-resource fallback here (unlike {@code bootstrap.ClientIds}) - this
+ * module must never depend on {@code bootstrap}'s package, and in the real deployment flow
+ * {@code launcher} is always spawned BY {@code bootstrap} with {@code -Dsn3.clientId=...}
+ * already resolved and forwarded, so this only ever matters when running this jar directly
+ * (dev/testing), where passing the property by hand is fine.
  */
 public final class Main {
 
@@ -35,10 +39,10 @@ public final class Main {
         AppDirs dirs = new AppDirs();
         Log.initialize(dirs);
 
-        String clientId = ClientIds.resolve(System.getProperty("sn3.clientId"));
-        if (clientId == null) {
-            System.err.println("Missing sn3.clientId: neither -Dsn3.clientId nor a bundled .clientId resource is set.");
-            Log.error(Main.class, "Missing sn3.clientId: neither -Dsn3.clientId nor a bundled .clientId resource is set", null);
+        String clientId = System.getProperty("sn3.clientId");
+        if (clientId == null || clientId.isBlank()) {
+            System.err.println("Missing required -Dsn3.clientId system property.");
+            Log.error(Main.class, "Missing required -Dsn3.clientId system property", null);
             System.exit(1);
             return;
         }

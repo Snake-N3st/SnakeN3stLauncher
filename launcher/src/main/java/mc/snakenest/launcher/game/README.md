@@ -21,6 +21,17 @@ third-party library type:
   action on the modpack detail page); the launch service turns those into
   `-Xmx<memoryMb>M` plus the raw extra args, appended before `-Dsn3.token`.
 
+  **Stopping it isn't always as simple as `Process#destroy()`**
+  (`LauncherApp#stopGame`, the "Arreter" button): that's SIGTERM on
+  Linux/macOS - a *request* to shut down, not a guarantee. A native
+  graphics/mod cleanup hang on shutdown (observed in practice) leaves the
+  process alive and the button stuck forever, with no recourse short of a
+  manual `kill -9` from a terminal. `stopGame` now waits up to
+  `FORCE_KILL_TIMEOUT_SECONDS` (10s) off the EDT after `destroy()`, and
+  escalates to `destroyForcibly()` (SIGKILL, unconditional) if the process
+  is still alive by then - verified against a real process that traps and
+  ignores `SIGTERM` before relying on this.
+
 - **`ModLoader`** — `VANILLA`/`FORGE`/`FABRIC`/`NEOFORGE`/`UNKNOWN`, shared
   with `modpack` (which parses it off the manifest's `loader` field) so the
   four accepted values live in exactly one place. Vanilla installs are
@@ -58,7 +69,5 @@ dependencies of this module.
 **Verification status**: every FlowUpdater/OpenLauncherLib method signature
 used in the two adapter classes was checked against the actual published
 jars (`javap` + the upstream source), not guessed from documentation alone.
-What hasn't been exercised in this environment is a full real install +
-launch (that means downloading an actual Minecraft distribution) - worth a
-manual end-to-end smoke test (pick one real modpack, install it, click
-"Démarrer") before relying on this in production.
+A real install + launch (a real Forge modpack, install then "Démarrer") has
+since been confirmed working end-to-end.

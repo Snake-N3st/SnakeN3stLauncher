@@ -53,7 +53,7 @@ final class ModpackCardView extends JPanel {
     private static final int ACTION_ICON_SIZE = 28;
     private static final int ACTION_BUTTON_SIZE = 44;
 
-    private enum ButtonState { IDLE, BUSY, RUNNING }
+    private enum ButtonState { IDLE, BUSY, RUNNING, STOPPING }
 
     // Paints its own circular background (rollover/pressed only - unlike ui.common.IconButton,
     // there's no "selected" state, this is a fire-once action button, not a toggle), same
@@ -84,17 +84,19 @@ final class ModpackCardView extends JPanel {
     private final Runnable onQuickAction;
     private final Runnable onCancel;
     private final Runnable onStop;
+    private final Runnable onKill;
     private boolean installed;
     private boolean updateAvailable;
     private ButtonState buttonState = ButtonState.IDLE;
 
     ModpackCardView(ModpackSummary modpack, boolean installed, boolean updateAvailable, BufferedImage logo, Runnable onOpen,
-                     Runnable onQuickAction, Runnable onCancel, Runnable onStop) {
+                     Runnable onQuickAction, Runnable onCancel, Runnable onStop, Runnable onKill) {
         this.installed = installed;
         this.updateAvailable = updateAvailable;
         this.onQuickAction = onQuickAction;
         this.onCancel = onCancel;
         this.onStop = onStop;
+        this.onKill = onKill;
         setLayout(new BorderLayout(16, 0));
         setOpaque(false);
         setBorder(new RoundedBorder(UIManager.getColor("Component.borderColor")));
@@ -193,6 +195,11 @@ final class ModpackCardView extends JPanel {
                 actionButton.setToolTipText("Arrêter");
                 actionButton.addActionListener(e -> onStop.run());
             }
+            case STOPPING -> {
+                actionButton.setIcon(Icons.skull(ACTION_ICON_SIZE));
+                actionButton.setToolTipText("Tuer");
+                actionButton.addActionListener(e -> onKill.run());
+            }
         }
     }
 
@@ -228,12 +235,35 @@ final class ModpackCardView extends JPanel {
         });
     }
 
-    /** While the game is running, the icon reads "Arrêter" instead of its resting play/download icon. Safe from any thread. */
+    /**
+     * While the game is running, the icon reads "Arrêter" instead of its resting play/download
+     * icon. Safe from any thread. Resets to idle from either {@code RUNNING} or {@code STOPPING}
+     * - see {@code ModpackDetailPage#setRunning}'s Javadoc for why.
+     */
     void setRunning(boolean running) {
         SwingUtilities.invokeLater(() -> {
             if (running) {
                 buttonState = ButtonState.RUNNING;
-            } else if (buttonState == ButtonState.RUNNING) {
+            } else if (buttonState == ButtonState.RUNNING || buttonState == ButtonState.STOPPING) {
+                buttonState = ButtonState.IDLE;
+            }
+            applyActionButton();
+        });
+    }
+
+    /**
+     * While the icon reads "Tuer" (force-kill instead of a graceful stop) - entered by clicking
+     * "Arrêter" once already. Safe from any thread. Only actually transitions if currently
+     * {@code RUNNING}, same "safe no-op for an unrelated card" reasoning as
+     * {@code ModpackDetailPage#setStopping}.
+     */
+    void setStopping(boolean stopping) {
+        SwingUtilities.invokeLater(() -> {
+            if (stopping) {
+                if (buttonState == ButtonState.RUNNING) {
+                    buttonState = ButtonState.STOPPING;
+                }
+            } else if (buttonState == ButtonState.STOPPING) {
                 buttonState = ButtonState.IDLE;
             }
             applyActionButton();

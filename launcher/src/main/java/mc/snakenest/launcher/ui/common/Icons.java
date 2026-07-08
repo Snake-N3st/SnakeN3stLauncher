@@ -171,6 +171,49 @@ public final class Icons {
         });
     }
 
+    /**
+     * A simple skull - the detail page's/quick-action's "Tuer" (force-kill) state, shown after
+     * "Arrêter" has already been clicked once (see {@code ModpackDetailPage.ButtonState#STOPPING}).
+     * Outlined (not filled) like {@code gear()}/{@code folder()} so the eye sockets/nose read as
+     * solid dots against it without needing to know the surrounding background color.
+     */
+    public static Icon skull(int size) {
+        return icon(size, (g, s) -> {
+            g.setStroke(stroke(s));
+            double cx = s / 2.0;
+            float craniumWidth = s * 0.64f;
+            float craniumX = (s - craniumWidth) / 2f;
+            float craniumTop = s * 0.12f;
+            float craniumHeight = s * 0.46f;
+            g.draw(new java.awt.geom.RoundRectangle2D.Float(craniumX, craniumTop, craniumWidth, craniumHeight,
+                    craniumWidth * 0.7f, craniumWidth * 0.7f));
+
+            Path2D jaw = new Path2D.Float();
+            jaw.moveTo(s * 0.32, s * 0.5);
+            jaw.lineTo(s * 0.32, s * 0.68);
+            jaw.quadTo(cx, s * 0.8, s * 0.68, s * 0.68);
+            jaw.lineTo(s * 0.68, s * 0.5);
+            g.draw(jaw);
+
+            double eyeR = s * 0.07;
+            g.fill(new Ellipse2D.Double(s * 0.36 - eyeR, s * 0.34 - eyeR, eyeR * 2, eyeR * 2));
+            g.fill(new Ellipse2D.Double(s * 0.64 - eyeR, s * 0.34 - eyeR, eyeR * 2, eyeR * 2));
+
+            Path2D nose = new Path2D.Float();
+            nose.moveTo(cx - s * 0.05, s * 0.44);
+            nose.lineTo(cx + s * 0.05, s * 0.44);
+            nose.lineTo(cx, s * 0.52);
+            nose.closePath();
+            g.fill(nose);
+
+            float toothY1 = s * 0.68f;
+            float toothY2 = s * 0.75f;
+            g.draw(new java.awt.geom.Line2D.Float(s * 0.44f, toothY1, s * 0.44f, toothY2));
+            g.draw(new java.awt.geom.Line2D.Float((float) cx, toothY1, (float) cx, toothY2));
+            g.draw(new java.awt.geom.Line2D.Float(s * 0.56f, toothY1, s * 0.56f, toothY2));
+        });
+    }
+
     private static BasicStroke stroke(int size) {
         return new BasicStroke(Math.max(1.5f, size / 10f), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
     }

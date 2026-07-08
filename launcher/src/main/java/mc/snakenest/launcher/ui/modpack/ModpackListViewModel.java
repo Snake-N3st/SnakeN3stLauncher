@@ -20,6 +20,7 @@ public final class ModpackListViewModel {
     private final Consumer<ModpackSummary> onQuickAction;
     private final Runnable onCancel;
     private final Runnable onStop;
+    private final Runnable onKill;
     private final Map<String, ModpackCardView> cards = new HashMap<>();
 
     /**
@@ -32,6 +33,7 @@ public final class ModpackListViewModel {
                                  Consumer<ModpackSummary> onSelect, Consumer<ModpackSummary> onQuickAction) {
         this(modpacks, installedSlugs, Set.of(), Map.of(), onSelect, onQuickAction, () -> {
         }, () -> {
+        }, () -> {
         });
     }
 
@@ -43,11 +45,14 @@ public final class ModpackListViewModel {
      * @param logos     pre-fetched modpack logos keyed by slug - see {@code LauncherApp#buildModpackSection}
      * @param onCancel  cancels whichever quick-installed (or detail-page) sync/install is
      *                  currently in flight - a busy card's icon switches to this
-     * @param onStop    stops the currently-running game - a running card's icon switches to this
+     * @param onStop    asks the currently-running game to exit (not forcibly) - a running
+     *                  card's icon switches to this
+     * @param onKill    force-kills the currently-running game outright - a stopping card's
+     *                  icon switches to this, entered by clicking the stop icon once already
      */
     public ModpackListViewModel(List<ModpackSummary> modpacks, Set<String> installedSlugs, Set<String> updateAvailableSlugs,
                                  Map<String, BufferedImage> logos, Consumer<ModpackSummary> onSelect, Consumer<ModpackSummary> onQuickAction,
-                                 Runnable onCancel, Runnable onStop) {
+                                 Runnable onCancel, Runnable onStop, Runnable onKill) {
         this.modpacks = modpacks;
         this.installedSlugs = installedSlugs;
         this.updateAvailableSlugs = updateAvailableSlugs;
@@ -56,6 +61,7 @@ public final class ModpackListViewModel {
         this.onQuickAction = onQuickAction;
         this.onCancel = onCancel;
         this.onStop = onStop;
+        this.onKill = onKill;
     }
 
     public List<ModpackSummary> modpacks() {
@@ -91,6 +97,10 @@ public final class ModpackListViewModel {
         return onStop;
     }
 
+    Runnable onKill() {
+        return onKill;
+    }
+
     /** Called once per card by {@link ModpackListPage} as it builds the list, so {@code setCard*} below can reach it later. */
     void registerCard(String slug, ModpackCardView card) {
         cards.put(slug, card);
@@ -113,6 +123,19 @@ public final class ModpackListViewModel {
         ModpackCardView card = cards.get(slug);
         if (card != null) {
             card.setRunning(running);
+        }
+    }
+
+    /**
+     * Same as {@link #setCardBusy}, for the "Tuer" (force-kill) state entered by clicking
+     * "Arrêter" once already - a no-op unless that card is currently running (see
+     * {@code ModpackCardView#setStopping}), so safe to call even if this list was rebuilt/
+     * refreshed in between and {@code slug}'s card, if any, isn't actually the running one.
+     */
+    public void setCardStopping(String slug, boolean stopping) {
+        ModpackCardView card = cards.get(slug);
+        if (card != null) {
+            card.setStopping(stopping);
         }
     }
 

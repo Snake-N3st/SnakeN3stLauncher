@@ -7,3 +7,14 @@ dependency-reduced-pom.xml
 # A real per-deployment client id (see common/util/ClientIds) - drop one locally before
 # packaging a turnkey single-client build, never commit it (this repo is public/GPL-3.0).
 **/src/main/resources/.clientId
+
+# "Launcher (test local)" IntelliJ run config's -Dsn3.dataDir=test-data (a relative path,
+# resolved against the working directory - the repo root for an IDE run) - test config/keys/logs,
+# never real data, but still not something to commit.
+/test-data/
+
+# A real bootstrap.properties (see bootstrap.BootstrapMain#loadPropertiesFileNextToJar) has to
+# sit next to the deployed jar, not inside it - same "never commit a real one" reasoning as
+# .clientId above. target/ already covers bootstrap/target/bootstrap.properties; this also
+# catches one dropped at the repo root for a quick manual test.
+/bootstrap.properties
