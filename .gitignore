@@ -18,3 +18,5 @@ dependency-reduced-pom.xml
 # .clientId above. target/ already covers bootstrap/target/bootstrap.properties; this also
 # catches one dropped at the repo root for a quick manual test.
 /bootstrap.properties
+/tools/
+/tools/*

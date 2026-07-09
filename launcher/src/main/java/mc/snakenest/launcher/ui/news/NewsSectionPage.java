@@ -2,6 +2,7 @@ package mc.snakenest.launcher.ui.news;
 
 import mc.snakenest.launcher.ui.Resettable;
 
+import javax.swing.JComponent;
 import javax.swing.JPanel;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
@@ -28,10 +29,15 @@ public final class NewsSectionPage extends JPanel implements Resettable {
         add(detailContainer, DETAIL);
     }
 
-    /** Swaps the list content in place (e.g. once real data has loaded) without disturbing the detail card. */
-    public void replaceList(NewsListPage listPage) {
+    /**
+     * Swaps the list content in place without disturbing the detail card - usually a
+     * {@code NewsListPage} once real data has loaded, but also used with a
+     * {@code ui.common.LoadingPanel} placeholder shown immediately while the list is (re)loading,
+     * mirroring {@code ui.modpack.ModpackSectionPage#replaceList}.
+     */
+    public void replaceList(JComponent listContent) {
         listContainer.removeAll();
-        listContainer.add(listPage, BorderLayout.CENTER);
+        listContainer.add(listContent, BorderLayout.CENTER);
         listContainer.revalidate();
         listContainer.repaint();
     }

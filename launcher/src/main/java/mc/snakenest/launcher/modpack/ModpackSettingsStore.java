@@ -23,19 +23,29 @@ public final class ModpackSettingsStore {
         this.dirs = dirs;
     }
 
-    /** Returns {@link ModpackSettings#defaults()} if nothing was ever saved, or the file is unreadable. */
-    public ModpackSettings load(String modpackSlug) {
+    /**
+     * Returns {@code fallback} if nothing was ever saved, or the file is unreadable - the player's
+     * own saved choice, once they have one, always wins over {@code fallback} regardless of what
+     * it is (so a curator changing a modpack's declared defaults later never overrides a setting
+     * the player already customized).
+     *
+     * @param fallback typically {@code ModpackSettings.defaults(manifest.defaultMemoryMb(),
+     *                 manifest.defaultJvmArgs())} - the modpack's curator-recommended starting
+     *                 point, or plain {@link ModpackSettings#defaults()} where no manifest is
+     *                 available yet
+     */
+    public ModpackSettings load(String modpackSlug, ModpackSettings fallback) {
         Path file = dirs.modpackSettingsFile(modpackSlug);
         if (!Files.isRegularFile(file)) {
-            return ModpackSettings.defaults();
+            return fallback;
         }
         try {
             String json = Files.readString(file, StandardCharsets.UTF_8);
             ModpackSettings settings = GSON.fromJson(json, ModpackSettings.class);
-            return settings != null ? settings : ModpackSettings.defaults();
+            return settings != null ? settings : fallback;
         } catch (IOException | JsonSyntaxException e) {
             Log.warn(ModpackSettingsStore.class, "Could not read settings for " + modpackSlug + ", falling back to defaults: " + e.getMessage());
-            return ModpackSettings.defaults();
+            return fallback;
         }
     }
 

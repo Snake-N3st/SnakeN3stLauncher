@@ -2,6 +2,7 @@ package mc.snakenest.launcher;
 
 import mc.snakenest.launcher.auth.ClientInfo;
 import mc.snakenest.launcher.auth.DeviceAuthService;
+import mc.snakenest.launcher.auth.LauncherApiException;
 import mc.snakenest.launcher.auth.LauncherAuthApiClient;
 import mc.snakenest.launcher.auth.PlayerInfo;
 import mc.snakenest.launcher.auth.PlayerSession;
@@ -167,8 +168,16 @@ final class LauncherApp {
 
         if (storedKey != null && storedPlayerId != null) {
             session = new PlayerSession(storedKey, storedPlayerId, clientId);
-            fetchPlayerInfoBlocking();
-            SwingUtilities.invokeLater(this::showShell);
+            if (fetchPlayerInfoBlocking()) {
+                SwingUtilities.invokeLater(this::showShell);
+            } else {
+                // The server rejected the stored key outright (401/403) - not something a retry
+                // or a slower connection can fix, so opening the shell would just leave every
+                // signed call failing the same way. Forget the now-useless key locally and fall
+                // back to the login screen instead.
+                forgetInvalidSession();
+                SwingUtilities.invokeLater(this::showLogin);
+            }
         } else {
             SwingUtilities.invokeLater(this::showLogin);
         }
@@ -241,16 +250,38 @@ final class LauncherApp {
         }
     }
 
-    /** Best-effort; leaves {@link #playerInfo}/{@link #playerAvatar} {@code null} on any failure or timeout. */
-    private void fetchPlayerInfoBlocking() {
+    /**
+     * Best-effort; leaves {@link #playerInfo}/{@link #playerAvatar} {@code null} on any failure
+     * or timeout, except a 401/403 rejecting the stored key itself - that's reported back to the
+     * caller instead of swallowed, since {@link #start()} needs to know to forget the now-useless
+     * key rather than open a shell every signed call will keep failing in.
+     *
+     * @return false if the stored key was rejected (401/403); true otherwise, including on any
+     * other failure (offline, timeout, server error) where the cached data is simply left stale
+     */
+    private boolean fetchPlayerInfoBlocking() {
         try {
             playerInfo = runWithTimeout(() -> authApi.fetchPlayerInfo(session));
             playerAvatar = RemoteImages.tryLoad(playerInfo.avatar());
+            return true;
+        } catch (LauncherApiException e) {
+            if (e.statusCode() == 401 || e.statusCode() == 403) {
+                Log.warn(LauncherApp.class, "Stored session was rejected (status " + e.statusCode() + ")");
+                return false;
+            }
+            Log.warn(LauncherApp.class, "Could not fetch player info: " + e.getMessage());
+            return true;
         } catch (Exception e) {
             Log.warn(LauncherApp.class, "Could not fetch player info: " + e.getMessage());
+            return true;
         }
     }
 
+    /**
+     * Unwraps {@link java.util.concurrent.ExecutionException} so callers can catch the typed
+     * exception a {@code task} actually threw (e.g. {@link LauncherApiException}) instead of
+     * string-matching a wrapper's message.
+     */
     private <T> T runWithTimeout(java.util.concurrent.Callable<T> task) throws Exception {
         java.util.concurrent.Future<T> future = backgroundExecutor.submit(task);
         try {
@@ -258,6 +289,12 @@ final class LauncherApp {
         } catch (java.util.concurrent.TimeoutException e) {
             future.cancel(true);
             throw new java.io.IOException("Timed out after " + STARTUP_FETCH_TIMEOUT, e);
+        } catch (java.util.concurrent.ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception ex) {
+                throw ex;
+            }
+            throw e;
         }
     }
 
@@ -347,6 +384,11 @@ final class LauncherApp {
 
     /** Fetches the news list and replaces the section's list page - the initial load, and what the topbar's refresh button re-runs while the list is shown. */
     private void loadNewsList(LauncherFrame frame, NewsSectionPage section) {
+        // Immediate visual transition, same reasoning as showModpackDetail's LoadingPanel - a
+        // click on "Actualiser" that visibly does nothing until the fetch completes reads as the
+        // app hanging.
+        section.replaceList(new mc.snakenest.launcher.ui.common.LoadingPanel("Chargement des actualités..."));
+
         backgroundExecutor.execute(() -> {
             try {
                 List<Post> posts = newsApi.listPosts();
@@ -357,6 +399,11 @@ final class LauncherApp {
                 });
             } catch (Exception e) {
                 Log.warn(LauncherApp.class, "Could not load news: " + e.getMessage());
+                // Falls back to an empty list rather than leaving the loading spinner stuck
+                // forever - matches this method's pre-loading-screen failure behavior, just
+                // without leaving a misleading "still loading" indicator on screen.
+                SwingUtilities.invokeLater(() -> section.replaceList(new NewsListPage(new NewsListViewModel(List.of(), post -> {
+                }))));
             }
         });
     }
@@ -384,6 +431,11 @@ final class LauncherApp {
 
     /** Fetches the modpack list + logos and replaces the section's list page - the initial load, and what "Actualiser" re-runs. */
     private void loadModpackList(LauncherFrame frame, ModpackSectionPage section) {
+        // Immediate visual transition, same reasoning as showModpackDetail's LoadingPanel - a
+        // click on "Actualiser" that visibly does nothing until the fetch completes reads as the
+        // app hanging.
+        section.replaceList(new mc.snakenest.launcher.ui.common.LoadingPanel("Chargement des modpacks..."));
+
         backgroundExecutor.execute(() -> {
             try {
                 List<ModpackSummary> modpacks = modpackApi.listModpacks(session);
@@ -403,6 +455,13 @@ final class LauncherApp {
                 });
             } catch (Exception e) {
                 Log.warn(LauncherApp.class, "Could not load modpacks: " + e.getMessage());
+                // Falls back to an empty list rather than leaving the loading spinner stuck
+                // forever - matches this method's pre-loading-screen failure behavior, just
+                // without leaving a misleading "still loading" indicator on screen.
+                SwingUtilities.invokeLater(() -> section.replaceList(new ModpackListPage(
+                        new ModpackListViewModel(List.of(), Set.of(), m -> {
+                        }, m -> {
+                        }))));
             }
         });
     }
@@ -473,7 +532,8 @@ final class LauncherApp {
         backgroundExecutor.execute(() -> {
             try {
                 ModpackManifest manifest = modpackApi.getManifest(modpack.slug(), null, session);
-                ModpackSettings settings = modpackSettingsStore.load(modpack.slug());
+                ModpackSettings settings = modpackSettingsStore.load(modpack.slug(),
+                        ModpackSettings.defaults(manifest.defaultMemoryMb(), manifest.defaultJvmArgs()));
                 BufferedImage logo = RemoteImages.tryLoad(modpack.image());
                 boolean updateAvailable = isUpdateAvailable(modpack.slug(), manifest.version());
                 SwingUtilities.invokeLater(() -> {
@@ -944,7 +1004,8 @@ final class LauncherApp {
     }
 
     private void launchGame(ModpackSummary modpack, ModpackManifest manifest, String username) throws Exception {
-        ModpackSettings settings = modpackSettingsStore.load(modpack.slug());
+        ModpackSettings settings = modpackSettingsStore.load(modpack.slug(),
+                ModpackSettings.defaults(manifest.defaultMemoryMb(), manifest.defaultJvmArgs()));
         LaunchRequest request = new LaunchRequest(
                 username,
                 OfflineUuids.forUsername(username),
@@ -1024,6 +1085,24 @@ final class LauncherApp {
             shellFrame = null;
         }
         showLogin();
+    }
+
+    /**
+     * Local-only cleanup for a stored key the server no longer recognizes (a 401/403 on the
+     * startup player-info fetch - see {@link #start()}). Unlike {@link #logout()}, never attempts
+     * a server-side revoke: the server already doesn't recognize this key, which is exactly why
+     * it's being forgotten, so there's nothing to revoke. Runs before any window is shown, so
+     * there's no {@code shellFrame} to dispose either.
+     */
+    private void forgetInvalidSession() {
+        keyStorage.delete();
+        var config = configStore.load();
+        config.setPlayerId(null);
+        configStore.save(config);
+
+        session = null;
+        playerInfo = null;
+        playerAvatar = null;
     }
 
     private void openUrl(String url) {

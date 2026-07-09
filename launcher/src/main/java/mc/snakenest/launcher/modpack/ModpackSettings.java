@@ -13,9 +13,20 @@ package mc.snakenest.launcher.modpack;
  */
 public record ModpackSettings(int memoryMb, String extraJvmArgs) {
 
+    /** Fallback when a modpack doesn't declare its own {@code ModpackManifest#defaultMemoryMb}. */
     public static final int DEFAULT_MEMORY_MB = 2048;
 
     public static ModpackSettings defaults() {
         return new ModpackSettings(DEFAULT_MEMORY_MB, "");
+    }
+
+    /**
+     * The curator's recommended starting point for a modpack the player has never customized
+     * settings for yet - see {@code ModpackManifest#defaultMemoryMb}/{@code #defaultJvmArgs}.
+     * {@code extraJvmArgs} may be {@code null} (never set by the curator); normalized to "" to
+     * match {@link #extraJvmArgs()}'s "empty string, never null" contract.
+     */
+    public static ModpackSettings defaults(int memoryMb, String extraJvmArgs) {
+        return new ModpackSettings(memoryMb, extraJvmArgs != null ? extraJvmArgs : "");
     }
 }

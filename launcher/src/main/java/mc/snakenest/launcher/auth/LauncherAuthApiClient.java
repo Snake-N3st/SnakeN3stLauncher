@@ -29,10 +29,10 @@ public final class LauncherAuthApiClient {
         JsonResponse response = http.postJson(baseUrl.resolve("/api/launcher-auth/challenge"), Map.of("client_id", clientId));
 
         if (response.statusCode() == 404) {
-            throw new LauncherApiException("Unknown client_id");
+            throw new LauncherApiException("Unknown client_id", response.statusCode());
         }
         if (!response.isSuccess()) {
-            throw new LauncherApiException("Unexpected status requesting a challenge: " + response.statusCode());
+            throw new LauncherApiException("Unexpected status requesting a challenge: " + response.statusCode(), response.statusCode());
         }
         return response.as(ChallengeResponse.class).challenge();
     }
@@ -47,10 +47,10 @@ public final class LauncherAuthApiClient {
         JsonResponse response = http.get(uri);
 
         if (response.statusCode() == 404) {
-            throw new LauncherApiException("Unknown client_id");
+            throw new LauncherApiException("Unknown client_id", response.statusCode());
         }
         if (!response.isSuccess()) {
-            throw new LauncherApiException("Unexpected status fetching client info: " + response.statusCode());
+            throw new LauncherApiException("Unexpected status fetching client info: " + response.statusCode(), response.statusCode());
         }
         return response.as(ClientInfo.class);
     }
@@ -65,7 +65,7 @@ public final class LauncherAuthApiClient {
             }
             case 403 -> new PollResult.Pending();
             case 404 -> new PollResult.NotFound();
-            default -> throw new LauncherApiException("Unexpected status polling the challenge: " + response.statusCode());
+            default -> throw new LauncherApiException("Unexpected status polling the challenge: " + response.statusCode(), response.statusCode());
         };
     }
 
@@ -94,7 +94,7 @@ public final class LauncherAuthApiClient {
         JsonResponse response = http.postJson(uri, Map.of());
 
         if (!response.isSuccess()) {
-            throw new LauncherApiException("Key revocation rejected (status " + response.statusCode() + ")");
+            throw new LauncherApiException("Key revocation rejected (status " + response.statusCode() + ")", response.statusCode());
         }
     }
 
@@ -105,7 +105,7 @@ public final class LauncherAuthApiClient {
         JsonResponse response = http.get(uri);
 
         if (!response.isSuccess()) {
-            throw new LauncherApiException("Player info request rejected (status " + response.statusCode() + ")");
+            throw new LauncherApiException("Player info request rejected (status " + response.statusCode() + ")", response.statusCode());
         }
         return response.as(type);
     }
