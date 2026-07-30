@@ -54,7 +54,8 @@ class LauncherAppActiveModpackTest {
         ConfigStore configStore = new ConfigStore(dirs);
         return new LauncherApp(dirs, URI.create("http://127.0.0.1"), "test-client-id", configStore,
                 new ThemeController(configStore), mock(LauncherAuthApiClient.class), mock(ModpackApiClient.class),
-                mock(NewsApiClient.class), mock(KeyStorage.class), mock(GameInstallService.class), mock(GameLaunchService.class));
+                mock(NewsApiClient.class), mock(KeyStorage.class), mock(GameInstallService.class), mock(GameLaunchService.class),
+                new mc.snakenest.launcher.crypto.PinProtection(dirs), null);
     }
 
     private static Object activeModpack(String slug, String activityName, Object installTask, Process gameProcess) throws Exception {
@@ -120,7 +121,7 @@ class LauncherAppActiveModpackTest {
 
     private ModpackDetailPage newDetailPage(String slug) {
         ModpackDetailViewModel viewModel = new ModpackDetailViewModel(
-                slug, "Aventure Ultime", "desc", "changelog", 1000, 10, true, false, null,
+                slug, "Aventure Ultime", "desc", "changelog", 1000, 10, true, false, null, null,
                 ModpackSettings.defaults(),
                 () -> {}, () -> {}, () -> {}, () -> {}, () -> {}, () -> {},
                 settings -> {}, () -> {}, () -> {}

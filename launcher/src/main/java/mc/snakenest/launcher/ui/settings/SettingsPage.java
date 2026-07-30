@@ -1,7 +1,10 @@
 package mc.snakenest.launcher.ui.settings;
 
+import mc.snakenest.launcher.config.AssetStorageMode;
 import mc.snakenest.launcher.config.Theme;
 import mc.snakenest.launcher.ui.about.LicensesDialog;
+import mc.snakenest.launcher.ui.common.Borders;
+import mc.snakenest.launcher.util.AppVersion;
 
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
@@ -9,6 +12,8 @@ import javax.swing.JCheckBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JRadioButton;
+import javax.swing.JScrollPane;
+import javax.swing.ScrollPaneConstants;
 import javax.swing.ButtonGroup;
 import javax.swing.border.EmptyBorder;
 import java.awt.BorderLayout;
@@ -26,7 +31,10 @@ public final class SettingsPage extends JPanel {
     private static final String SOURCE_URL = "https://github.com/Snake-N3st/SnakeN3stLauncher";
 
     public SettingsPage(Theme currentTheme, Consumer<Theme> onThemeChanged, boolean discordEnabled, Consumer<Boolean> onDiscordToggled,
-                         Runnable onOpenDataFolder, Runnable onLogout) {
+                         AssetStorageMode currentAssetStorageMode, Consumer<AssetStorageMode> onAssetStorageModeChanged,
+                         boolean pinEnabled, java.util.function.Predicate<Boolean> onPinToggled,
+                         Runnable onMigrateAssetStorage,
+                         Runnable onOpenDataFolder, Runnable onCleanup, Runnable onLogout) {
         setLayout(new BorderLayout());
         setBorder(new EmptyBorder(24, 24, 24, 24));
 
@@ -40,12 +48,14 @@ public final class SettingsPage extends JPanel {
         content.add(section("Discord", discordRow(discordEnabled, onDiscordToggled)));
         content.add(javax.swing.Box.createVerticalStrut(24));
 
-        JPanel dataFolderRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        dataFolderRow.setOpaque(false);
-        JButton openFolder = new JButton("Ouvrir le dossier de données");
-        openFolder.addActionListener(e -> onOpenDataFolder.run());
-        dataFolderRow.add(openFolder);
-        content.add(section("Données", dataFolderRow));
+        content.add(section("Stockage des ressources vanilla",
+                assetStorageModeRows(currentAssetStorageMode, onAssetStorageModeChanged, onMigrateAssetStorage)));
+        content.add(javax.swing.Box.createVerticalStrut(24));
+
+        content.add(section("Sécurité", pinRows(pinEnabled, onPinToggled)));
+        content.add(javax.swing.Box.createVerticalStrut(24));
+
+        content.add(section("Données", dataRows(onOpenDataFolder, onCleanup)));
         content.add(javax.swing.Box.createVerticalStrut(24));
 
         JPanel logoutRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
@@ -59,7 +69,25 @@ public final class SettingsPage extends JPanel {
         content.add(section("A propos", aboutRows()));
 
         content.setAlignmentX(Component.LEFT_ALIGNMENT);
-        add(content, BorderLayout.NORTH);
+
+        // Scrollable, because this page has outgrown a small window: the sections below the fold
+        // (notably "Compte" and the GPL source link, which has to stay reachable) were simply
+        // unreachable before, since a BorderLayout.NORTH child just gets clipped with no way to
+        // scroll to it. The wrapper keeps content top-aligned exactly as before.
+        JPanel top = new JPanel(new BorderLayout());
+        top.setOpaque(false);
+        top.add(content, BorderLayout.NORTH);
+
+        JScrollPane scroll = new JScrollPane(top,
+                ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.setOpaque(false);
+        scroll.getViewport().setOpaque(false);
+        scroll.setBorder(Borders.none());
+        // Swing's default of 1px per notch makes a long page feel broken.
+        scroll.getVerticalScrollBar().setUnitIncrement(16);
+
+        add(scroll, BorderLayout.CENTER);
     }
 
     /**
@@ -73,7 +101,7 @@ public final class SettingsPage extends JPanel {
         column.setOpaque(false);
         column.setLayout(new BoxLayout(column, BoxLayout.Y_AXIS));
 
-        JLabel version = new JLabel("SnakeN3st Launcher " + appVersion());
+        JLabel version = new JLabel("SnakeN3st Launcher " + AppVersion.current());
         version.setAlignmentX(Component.LEFT_ALIGNMENT);
         column.add(version);
         column.add(javax.swing.Box.createVerticalStrut(6));
@@ -100,11 +128,6 @@ public final class SettingsPage extends JPanel {
         column.add(licensesRow);
 
         return column;
-    }
-
-    private static String appVersion() {
-        String version = SettingsPage.class.getPackage().getImplementationVersion();
-        return version != null ? version : "dev";
     }
 
     private void openSourceUrl() {
@@ -152,6 +175,134 @@ public final class SettingsPage extends JPanel {
         row.add(light);
         row.add(dark);
         return row;
+    }
+
+    /**
+     * Stacked (rather than side-by-side like {@link #themeRow}) because each option needs a line
+     * of explanation - the disk-space/breakage trade-offs aren't guessable from the labels alone.
+     */
+    private JPanel assetStorageModeRows(AssetStorageMode current, Consumer<AssetStorageMode> onChanged, Runnable onMigrate) {
+        JPanel column = new JPanel();
+        column.setOpaque(false);
+        column.setLayout(new BoxLayout(column, BoxLayout.Y_AXIS));
+
+        ButtonGroup group = new ButtonGroup();
+
+        column.add(assetStorageModeOption(group, current, onChanged, AssetStorageMode.LAUNCHER_SHARED,
+                "Stocker dans les données du launcher",
+                "Partagé entre tous les modpacks. Recommandé."));
+        column.add(javax.swing.Box.createVerticalStrut(10));
+
+        column.add(assetStorageModeOption(group, current, onChanged, AssetStorageMode.OFFICIAL_MINECRAFT,
+                "Stocker dans les données du lanceur officiel / TLauncher",
+                "Économise encore plus d'espace disque, mais peut casser les ressources du lanceur officiel "
+                        + "(elles se retéléchargent toutes seules si ça arrive)."));
+        column.add(javax.swing.Box.createVerticalStrut(10));
+
+        column.add(assetStorageModeOption(group, current, onChanged, AssetStorageMode.PER_MODPACK,
+                "Stocker les données séparément dans chaque modpack",
+                "Aucun partage : prend beaucoup plus d'espace disque."));
+        column.add(javax.swing.Box.createVerticalStrut(14));
+
+        // Changing the radio button alone only affects future installs - this is what applies it to
+        // what's already on disk (see game.assets.SharedAssetsLinker#migrate).
+        JPanel migrateRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        migrateRow.setOpaque(false);
+        migrateRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JButton migrate = new JButton("Migrer les modpacks déjà installés");
+        migrate.addActionListener(e -> onMigrate.run());
+        migrateRow.add(migrate);
+        column.add(migrateRow);
+
+        JLabel migrateHelp = new JLabel("Applique l'option choisie aux modpacks déjà installés (sinon elle ne vaut que pour les prochaines installations).");
+        migrateHelp.setAlignmentX(Component.LEFT_ALIGNMENT);
+        migrateHelp.setFont(migrateHelp.getFont().deriveFont(Font.PLAIN, 12f));
+        migrateHelp.setForeground(javax.swing.UIManager.getColor("Label.disabledForeground"));
+        migrateHelp.setBorder(new EmptyBorder(4, 0, 0, 0));
+        column.add(migrateHelp);
+
+        return column;
+    }
+
+    private JPanel assetStorageModeOption(ButtonGroup group, AssetStorageMode current, Consumer<AssetStorageMode> onChanged,
+                                          AssetStorageMode mode, String label, String description) {
+        JPanel option = new JPanel();
+        option.setOpaque(false);
+        option.setLayout(new BoxLayout(option, BoxLayout.Y_AXIS));
+        option.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        JRadioButton button = new JRadioButton(label, current == mode);
+        button.setAlignmentX(Component.LEFT_ALIGNMENT);
+        button.addActionListener(e -> onChanged.accept(mode));
+        group.add(button);
+        option.add(button);
+
+        JLabel help = new JLabel(description);
+        help.setAlignmentX(Component.LEFT_ALIGNMENT);
+        help.setFont(help.getFont().deriveFont(Font.PLAIN, 12f));
+        help.setForeground(javax.swing.UIManager.getColor("Label.disabledForeground"));
+        // Indented under its own radio button rather than flush left, so it reads as belonging to
+        // that option and not to the section as a whole.
+        help.setBorder(new EmptyBorder(0, 24, 0, 0));
+        option.add(help);
+
+        return option;
+    }
+
+    private JPanel dataRows(Runnable onOpenDataFolder, Runnable onCleanup) {
+        JPanel column = new JPanel();
+        column.setOpaque(false);
+        column.setLayout(new BoxLayout(column, BoxLayout.Y_AXIS));
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        buttons.setOpaque(false);
+        buttons.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        JButton openFolder = new JButton("Ouvrir le dossier de données");
+        openFolder.addActionListener(e -> onOpenDataFolder.run());
+        buttons.add(openFolder);
+
+        JButton cleanup = new JButton("Nettoyer");
+        cleanup.addActionListener(e -> onCleanup.run());
+        buttons.add(cleanup);
+        column.add(buttons);
+
+        JLabel help = new JLabel("Supprime les logs, les rapports de crash et les caches. "
+                + "Ne touche pas aux mods, configs, mondes, ni à ta session.");
+        help.setAlignmentX(Component.LEFT_ALIGNMENT);
+        help.setFont(help.getFont().deriveFont(Font.PLAIN, 12f));
+        help.setForeground(javax.swing.UIManager.getColor("Label.disabledForeground"));
+        help.setBorder(new EmptyBorder(4, 0, 0, 0));
+        column.add(help);
+
+        return column;
+    }
+
+    /**
+     * The checkbox reflects whatever {@code onPinToggled} <em>returns</em>, not what was clicked:
+     * enabling/disabling a PIN can be cancelled at the dialog, or rejected on a wrong code, and in
+     * those cases the box has to snap back instead of lying about the real state.
+     */
+    private JPanel pinRows(boolean pinEnabled, java.util.function.Predicate<Boolean> onPinToggled) {
+        JPanel column = new JPanel();
+        column.setOpaque(false);
+        column.setLayout(new BoxLayout(column, BoxLayout.Y_AXIS));
+
+        JCheckBox checkbox = new JCheckBox("Protéger ma session par un code PIN", pinEnabled);
+        checkbox.setAlignmentX(Component.LEFT_ALIGNMENT);
+        checkbox.addActionListener(e -> checkbox.setSelected(onPinToggled.test(checkbox.isSelected())));
+        column.add(checkbox);
+
+        JLabel help = new JLabel("<html>Chiffre ta session avec un code demandé au démarrage, pour limiter le risque de vol de session.<br>"
+                + "Chiffre aussi les fichiers sensibles des modpacks (ceux listés dans un fichier <code>.cryptlist</code>).<br>"
+                + "<b>Le code est irrécupérable en cas d'oubli</b> - il faudra alors se reconnecter.</html>");
+        help.setAlignmentX(Component.LEFT_ALIGNMENT);
+        help.setFont(help.getFont().deriveFont(Font.PLAIN, 12f));
+        help.setForeground(javax.swing.UIManager.getColor("Label.disabledForeground"));
+        help.setBorder(new EmptyBorder(0, 24, 0, 0));
+        column.add(help);
+
+        return column;
     }
 
     private JPanel discordRow(boolean discordEnabled, Consumer<Boolean> onDiscordToggled) {

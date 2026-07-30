@@ -35,7 +35,7 @@ class LauncherReleaseClientTest {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         base = URI.create("http://127.0.0.1:" + server.getAddress().getPort());
 
-        server.createContext("/api/launcher-auth/releases/latest", exchange -> {
+        server.createContext("/api/launcher-auth/releases/launcher/latest", exchange -> {
             String query = exchange.getRequestURI().getQuery();
             if (query == null || !query.contains("client_id=test-client")) {
                 exchange.sendResponseHeaders(400, -1);
@@ -43,7 +43,7 @@ class LauncherReleaseClientTest {
                 return;
             }
             String json = """
-                    {"version":"1.2.0","sha256":"%s","size":%d,"changelog":"test","download_url":"%s/api/launcher-auth/releases/1.2.0/download"}
+                    {"version":"1.2.0","sha256":"%s","size":%d,"changelog":"test","download_url":"%s/api/launcher-auth/releases/launcher/1.2.0/download"}
                     """.formatted(JAR_HASH, JAR_CONTENT.length(), base);
             byte[] body = json.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, body.length);
@@ -52,7 +52,7 @@ class LauncherReleaseClientTest {
             }
         });
 
-        server.createContext("/api/launcher-auth/releases/1.2.0/download", exchange -> {
+        server.createContext("/api/launcher-auth/releases/launcher/1.2.0/download", exchange -> {
             byte[] body = JAR_CONTENT.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, body.length);
             try (OutputStream out = exchange.getResponseBody()) {
@@ -71,7 +71,7 @@ class LauncherReleaseClientTest {
 
     @Test
     void fetchLatestParsesTheResponse() throws Exception {
-        LauncherReleaseInfo release = client.fetchLatest();
+        LauncherReleaseInfo release = client.fetchLatest(ReleaseType.LAUNCHER);
 
         assertEquals("1.2.0", release.version());
         assertEquals(JAR_HASH, release.sha256());
@@ -80,7 +80,7 @@ class LauncherReleaseClientTest {
 
     @Test
     void downloadVerifiesAndWritesTheContent(@TempDir Path tempDir) throws Exception {
-        LauncherReleaseInfo release = client.fetchLatest();
+        LauncherReleaseInfo release = client.fetchLatest(ReleaseType.LAUNCHER);
         Path target = tempDir.resolve("launcher.jar");
 
         client.download(release, target);
@@ -91,7 +91,7 @@ class LauncherReleaseClientTest {
     @Test
     void downloadRejectsAMismatchedHashAndLeavesNoFile(@TempDir Path tempDir) throws Exception {
         LauncherReleaseInfo tamperedRelease = new LauncherReleaseInfo("1.2.0", "0".repeat(64), JAR_CONTENT.length(),
-                "test", base + "/api/launcher-auth/releases/1.2.0/download");
+                "test", base + "/api/launcher-auth/releases/launcher/1.2.0/download");
         Path target = tempDir.resolve("launcher.jar");
 
         assertThrows(HashVerificationException.class, () -> client.download(tamperedRelease, target));

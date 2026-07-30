@@ -1,6 +1,7 @@
 package mc.snakenest.launcher.ui.news;
 
 import mc.snakenest.launcher.news.Post;
+import mc.snakenest.launcher.ui.common.Borders;
 
 import javax.swing.JButton;
 import javax.swing.JEditorPane;
@@ -25,9 +26,9 @@ public final class NewsDetailPage extends JPanel {
         JEditorPane content = new JEditorPane("text/html", post.content() == null ? "" : post.content());
         content.setEditable(false);
         content.setOpaque(false);
-        content.setBorder(null);
+        content.setBorder(Borders.none());
         JScrollPane scrollPane = new JScrollPane(content);
-        scrollPane.setBorder(null);
+        scrollPane.setBorder(Borders.none());
         add(scrollPane, BorderLayout.CENTER);
 
         JButton openOnSite = new JButton("Voir sur le site");

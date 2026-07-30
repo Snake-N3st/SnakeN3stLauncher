@@ -4,9 +4,12 @@ target/
 .DS_Store
 dependency-reduced-pom.xml
 
-# A real per-deployment client id (see common/util/ClientIds) - drop one locally before
-# packaging a turnkey single-client build, never commit it (this repo is public/GPL-3.0).
-**/src/main/resources/.clientId
+# A real per-deployment jvm.prop (see bootstrap.BundledJvmProperties/ClientIds) - typically
+# sn3.clientId/sn3.baseUrl, normally injected automatically by the site when it publishes a
+# bootstrap release or builds the portable/installer distributions (SnakeN3stLogin's
+# BootstrapJvmPropInjector), not committed here - this repo is public/GPL-3.0, and a real client
+# id identifies a specific deployment.
+**/src/main/resources/jvm.prop
 
 # "Launcher (test local)" IntelliJ run config's -Dsn3.dataDir=test-data (a relative path,
 # resolved against the working directory - the repo root for an IDE run) - test config/keys/logs,

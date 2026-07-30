@@ -1,6 +1,7 @@
 package mc.snakenest.launcher.ui.news;
 
 import mc.snakenest.launcher.news.Post;
+import mc.snakenest.launcher.ui.common.Borders;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -45,7 +46,7 @@ public final class NewsListPage extends JPanel {
         }
 
         JScrollPane scrollPane = new JScrollPane(list);
-        scrollPane.setBorder(null);
+        scrollPane.setBorder(Borders.none());
         scrollPane.getVerticalScrollBar().setUnitIncrement(16);
         add(scrollPane, BorderLayout.CENTER);
     }

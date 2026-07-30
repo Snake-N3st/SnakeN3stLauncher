@@ -24,6 +24,10 @@ import java.util.function.Consumer;
  *                  {@code installed} is true) - the button reads
  *                  "Mettre a jour" instead of "Demarrer", {@code onDemarrer}
  *                  is still the same sync+install+launch action either way.
+ * @param installedSizeBytes actual on-disk size of the instance directory, {@code null} if
+ *                  never installed at all - deliberately reflects reality even on a
+ *                  partial/interrupted install rather than the manifest's declared total, shown
+ *                  alongside it in {@link ModpackDetailPage}'s header.
  * @param logo      the modpack's real logo, pre-fetched by {@code LauncherApp}
  *                  (best-effort - see {@code ui.common.RemoteImages}); {@code
  *                  null} falls back to the letter placeholder.
@@ -56,6 +60,7 @@ public record ModpackDetailViewModel(
         int fileCount,
         boolean installed,
         boolean updateAvailable,
+        Long installedSizeBytes,
         BufferedImage logo,
         ModpackSettings settings,
         Runnable onDemarrer,

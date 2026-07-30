@@ -40,7 +40,15 @@ string or path alone (two versions sharing a file never re-download it).
 - **`ModpackFileDownloader`** — downloads one file, verifying its SHA-256
   **before** it's ever written at its final path
   (`util.AtomicFiles#writeVerified`) - a truncated or corrupted transfer is
-  discarded, never silently accepted.
+  discarded, never silently accepted. `ManifestFile.url()`, when set, redirects
+  the fetch to a third-party origin server (`net.HttpJsonClient#getRaw`, no
+  signing/`client_id`) instead of this site's own blob storage - the "curator's
+  own zip can't legally bundle this mod" case, e.g. its license forbids
+  redistribution. The site computes `hash`/`size` itself once at import time by
+  fetching the URL server-side (see `modpacks-plugin`'s `.autodownload`
+  handling in `ModpackImporter`), so the file is otherwise completely normal -
+  same hash-diffing, same verified write, `ManifestDiffer` doesn't even need to
+  know the difference.
 
 - **`ModpackSyncEngine`** — orchestrates the whole thing: diff, download
   what's needed, delete what's gone (pruning now-empty directories, bounded
@@ -69,3 +77,24 @@ string or path alone (two versions sharing a file never re-download it).
   as protection against a `../../..`-style path even though the server is
   presumed trusted - the same defense-in-depth the server itself already
   applies to blob hashes.
+
+- **`SensitiveFileVault`** — encrypts a pack's own sensitive files at rest
+  under the player's PIN-derived key (`crypto.PinProtection`), driven by an
+  **optional `.cryptlist`** at the instance root: one glob per line
+  (relative to the instance), `#` comments and blank lines ignored. Globs
+  rather than plain paths, so a pack can write `config/*.secret`; matching
+  runs against files actually found under the instance, which is also why a
+  pattern can't reach outside it however it's written (covered by a test).
+
+  An encrypted file becomes `<original>.sn3enc`, plaintext removed. Since
+  the game can't read that, `LauncherApp` decrypts just before launch and
+  re-encrypts when the process exits, making the plaintext window exactly
+  the play session; it also re-seals at startup, which covers a crash or a
+  kill that skipped the exit hook. **Decryption works off the `.sn3enc`
+  files present on disk, not off `.cryptlist`** - otherwise editing the list
+  could strand a file as permanently unreadable.
+
+  Skipped entirely when no PIN is set: there would be no key worth
+  encrypting under, since it would just sit in `secure/wrap.key` beside the
+  data it protects.
+

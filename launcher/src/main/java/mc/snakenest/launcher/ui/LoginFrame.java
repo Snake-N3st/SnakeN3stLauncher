@@ -116,6 +116,22 @@ public final class LoginFrame extends JFrame {
         logoPanel.setImage(logo);
     }
 
+    /**
+     * Reports a failure that happened <em>after</em> {@code onSuccess} was handed the playerId (so
+     * past this class's own listener), and re-enables the button so the player can retry. Without
+     * it, such a failure would leave this window stuck on "chargement..." with no way forward,
+     * since the caller now owns closing it (see {@code LauncherApp#showShell}).
+     */
+    public void showPostLoginFailure(String message) {
+        SwingUtilities.invokeLater(() -> {
+            statusLabel.setForeground(Colors.danger());
+            statusLabel.setText("<html><center>" + message + "</center></html>");
+            progressBar.setVisible(false);
+            connectButton.setVisible(true);
+            connectButton.setEnabled(true);
+        });
+    }
+
     private void connect(LongConsumer onSuccess) {
         connectButton.setEnabled(false);
         cancelButton.setVisible(true);
@@ -142,8 +158,18 @@ public final class LoginFrame extends JFrame {
             @Override
             public void onSucceeded(long playerId) {
                 SwingUtilities.invokeLater(() -> {
-                    dispose();
                     authService.shutdown();
+                    // Deliberately NOT disposed here - the caller closes this window once it has a
+                    // replacement on screen (LauncherApp#showShell). Disposing it now would leave
+                    // the app with no displayable window at all while onSuccess's own work runs on
+                    // a background (daemon) thread, and AWT shuts the EDT down in exactly that
+                    // situation - which killed the JVM with exit code 0, mid-login, before the
+                    // shell was ever built.
+                    statusLabel.setForeground(UIManager.getColor("Label.foreground"));
+                    statusLabel.setText("Connexion reussie, chargement...");
+                    progressBar.setVisible(true);
+                    connectButton.setVisible(false);
+                    cancelButton.setVisible(false);
                     onSuccess.accept(playerId);
                 });
             }

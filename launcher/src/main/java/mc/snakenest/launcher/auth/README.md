@@ -41,11 +41,17 @@ private key.
 
 - **`SignedRequestSigner`** / **`SignedParams`** — the one signing recipe
   every player-info and modpacks call shares: sign
-  `"playerinfo:" + unixTimestamp` with the player's key, send
-  `playerId`/`publicKey`/`timestamp`/`signature` (+ `client_id` for
-  modpacks). Centralized here so it's never subtly reimplemented twice.
-  **Must be recomputed per request** - the server tolerates ±60s skew and
-  won't accept a stale timestamp, so never cache a `SignedParams`.
+  `"{METHOD}:{path}:" + unixTimestamp` (method uppercase, path without its
+  leading slash - the exact path/method about to be requested) with the
+  player's key, send `playerId`/`publicKey`/`timestamp`/`signature` (+
+  `client_id` for modpacks). Centralized here so it's never subtly
+  reimplemented twice. Binding the signature to the exact method+path (see
+  `VerifyLauncherSignature` in the sibling `SnakeN3stLogin` repo) means a
+  signature captured for one endpoint (e.g. from server logs) can never be
+  replayed against a different one; the server also rejects a signature it's
+  already seen once, even for the same endpoint. **Must be recomputed per
+  request** - the server tolerates ±60s skew and won't accept a stale or
+  already-used timestamp/signature, so never cache a `SignedParams`.
 
 - **`PollResult`** — sealed result of one challenge poll: `Pending` (403,
   keep polling), `NotFound` (404, stop - expired or already consumed),

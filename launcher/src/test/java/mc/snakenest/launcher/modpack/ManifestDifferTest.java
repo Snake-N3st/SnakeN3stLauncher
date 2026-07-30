@@ -18,8 +18,8 @@ class ManifestDifferTest {
     @Test
     void freshInstallDownloadsEverythingAndDeletesNothing() {
         ModpackManifest target = manifest(
-                new ManifestFile("mods/a.jar", "hash-a", 10),
-                new ManifestFile("mods/b.jar", "hash-b", 20)
+                new ManifestFile("mods/a.jar", "hash-a", 10, null),
+                new ManifestFile("mods/b.jar", "hash-b", 20, null)
         );
 
         SyncPlan plan = ManifestDiffer.diff(Optional.empty(), target);
@@ -30,7 +30,7 @@ class ManifestDifferTest {
 
     @Test
     void identicalManifestProducesAnEmptyPlan() {
-        ManifestFile file = new ManifestFile("mods/a.jar", "hash-a", 10);
+        ManifestFile file = new ManifestFile("mods/a.jar", "hash-a", 10, null);
         ModpackManifest target = manifest(file);
         StoredManifest previous = new StoredManifest("1.0.0", Map.of("mods/a.jar", "hash-a"));
 
@@ -43,8 +43,8 @@ class ManifestDifferTest {
     @Test
     void onlyTheChangedFileIsRedownloaded() {
         ModpackManifest target = manifest(
-                new ManifestFile("mods/a.jar", "hash-a-v2", 10),
-                new ManifestFile("mods/b.jar", "hash-b", 20)
+                new ManifestFile("mods/a.jar", "hash-a-v2", 10, null),
+                new ManifestFile("mods/b.jar", "hash-b", 20, null)
         );
         StoredManifest previous = new StoredManifest("1.0.0", Map.of(
                 "mods/a.jar", "hash-a-v1",
@@ -53,13 +53,13 @@ class ManifestDifferTest {
 
         SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target);
 
-        assertEquals(List.of(new ManifestFile("mods/a.jar", "hash-a-v2", 10)), plan.toDownload());
+        assertEquals(List.of(new ManifestFile("mods/a.jar", "hash-a-v2", 10, null)), plan.toDownload());
         assertTrue(plan.toDelete().isEmpty());
     }
 
     @Test
     void fileRemovedInNewVersionIsDeleted() {
-        ModpackManifest target = manifest(new ManifestFile("mods/a.jar", "hash-a", 10));
+        ModpackManifest target = manifest(new ManifestFile("mods/a.jar", "hash-a", 10, null));
         StoredManifest previous = new StoredManifest("1.0.0", Map.of(
                 "mods/a.jar", "hash-a",
                 "mods/removed.jar", "hash-removed"
@@ -73,27 +73,27 @@ class ManifestDifferTest {
 
     @Test
     void renamedFileIsDownloadedAtTheNewPathAndDeletedAtTheOldOne() {
-        ModpackManifest target = manifest(new ManifestFile("mods/new-name.jar", "hash-a", 10));
+        ModpackManifest target = manifest(new ManifestFile("mods/new-name.jar", "hash-a", 10, null));
         StoredManifest previous = new StoredManifest("1.0.0", Map.of("mods/old-name.jar", "hash-a"));
 
         SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target);
 
-        assertEquals(List.of(new ManifestFile("mods/new-name.jar", "hash-a", 10)), plan.toDownload());
+        assertEquals(List.of(new ManifestFile("mods/new-name.jar", "hash-a", 10, null)), plan.toDownload());
         assertEquals(List.of("mods/old-name.jar"), plan.toDelete());
     }
 
     @Test
     void protectedFileIsSeededOnFreshInstall() {
-        ModpackManifest target = manifest(new ManifestFile("options.txt", "hash-a", 10));
+        ModpackManifest target = manifest(new ManifestFile("options.txt", "hash-a", 10, null));
 
         SyncPlan plan = ManifestDiffer.diff(Optional.empty(), target);
 
-        assertEquals(List.of(new ManifestFile("options.txt", "hash-a", 10)), plan.toDownload());
+        assertEquals(List.of(new ManifestFile("options.txt", "hash-a", 10, null)), plan.toDownload());
     }
 
     @Test
     void protectedFileIsNeverRedownloadedOnceTrackedEvenIfItsHashChangesUpstream() {
-        ModpackManifest target = manifest(new ManifestFile("options.txt", "hash-a-v2", 10));
+        ModpackManifest target = manifest(new ManifestFile("options.txt", "hash-a-v2", 10, null));
         StoredManifest previous = new StoredManifest("1.0.0", Map.of("options.txt", "hash-a-v1"));
 
         SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target);
@@ -113,12 +113,12 @@ class ManifestDifferTest {
 
     @Test
     void protectedFileIsReseededAfterReparerClearsTheLocalManifest() {
-        ModpackManifest target = manifest(new ManifestFile("servers.dat", "hash-a-v2", 10));
+        ModpackManifest target = manifest(new ManifestFile("servers.dat", "hash-a-v2", 10, null));
 
         // "Réparer" clears the locally-recorded manifest before diffing (see
         // LocalManifestStore#clear) - simulated here the same way, Optional.empty().
         SyncPlan plan = ManifestDiffer.diff(Optional.empty(), target);
 
-        assertEquals(List.of(new ManifestFile("servers.dat", "hash-a-v2", 10)), plan.toDownload());
+        assertEquals(List.of(new ManifestFile("servers.dat", "hash-a-v2", 10, null)), plan.toDownload());
     }
 }

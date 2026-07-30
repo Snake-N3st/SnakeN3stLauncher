@@ -1,6 +1,7 @@
 package mc.snakenest.launcher.ui.modpack;
 
 import mc.snakenest.launcher.modpack.ModpackSummary;
+import mc.snakenest.launcher.ui.common.Borders;
 
 import javax.swing.BoxLayout;
 import javax.swing.JLabel;
@@ -45,7 +46,7 @@ public final class ModpackListPage extends JPanel {
         }
 
         JScrollPane scrollPane = new JScrollPane(list);
-        scrollPane.setBorder(null);
+        scrollPane.setBorder(Borders.none());
         scrollPane.getVerticalScrollBar().setUnitIncrement(16);
         add(scrollPane, BorderLayout.CENTER);
     }

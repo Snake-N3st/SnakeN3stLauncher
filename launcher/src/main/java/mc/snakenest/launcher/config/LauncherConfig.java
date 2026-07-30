@@ -24,6 +24,9 @@ public final class LauncherConfig {
     /** Whether to connect to the local Discord client and show Rich Presence. Default on. */
     private boolean discordEnabled = true;
 
+    /** Where vanilla assets/libraries are stored - see {@link AssetStorageMode}. Shared by default. */
+    private AssetStorageMode assetStorageMode = AssetStorageMode.LAUNCHER_SHARED;
+
     public Theme theme() {
         return theme;
     }
@@ -46,5 +49,13 @@ public final class LauncherConfig {
 
     public void setDiscordEnabled(boolean discordEnabled) {
         this.discordEnabled = discordEnabled;
+    }
+
+    public AssetStorageMode assetStorageMode() {
+        return assetStorageMode;
+    }
+
+    public void setAssetStorageMode(AssetStorageMode assetStorageMode) {
+        this.assetStorageMode = assetStorageMode;
     }
 }

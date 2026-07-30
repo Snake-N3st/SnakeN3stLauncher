@@ -21,6 +21,8 @@ class AppDirsTest {
         assertEquals(root.resolve("secure"), dirs.secure());
         assertEquals(root.resolve("logs"), dirs.logs());
         assertEquals(root.resolve("config.json"), dirs.configFile());
+        assertEquals(root.resolve("shared").resolve("assets"), dirs.sharedAssetsPool());
+        assertEquals(root.resolve("shared").resolve("libraries"), dirs.sharedLibrariesPool());
     }
 
     @Test

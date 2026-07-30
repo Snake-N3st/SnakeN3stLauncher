@@ -44,6 +44,15 @@ SnakeN3stLauncher/
 └── launcher/    l'application complète, licence GPL-3.0 (voir launcher/LICENSE)
 ```
 
+**Versions : une par module, indépendantes, à partir de `2.0.0`** —
+`MAJEUR.MOYEN.MINEUR`, où le majeur ne bouge *que* sur demande explicite, le
+moyen sur une grosse mise à jour, le mineur pour tout le reste. Corriger un
+bug du `launcher` ne fait pas bouger `bootstrap` ni `common`. Le `pom.xml`
+racine n'est pas une version produit (il ne versionne que la config de build
+partagée). Le launcher connaît sa propre version via
+`util.AppVersion#current()` (ressource filtrée par Maven, pas le manifeste).
+**Règles complètes et pourquoi ça démarre à 2.0.0 : voir `VERSIONING.md`.**
+
 **Pourquoi cette séparation** : `launcher` embarque FlowUpdater,
 OpenLauncherLib, et la dépendance transitive de FlowUpdater
 `flowmultitools` (installation/lancement de Minecraft), tous les trois

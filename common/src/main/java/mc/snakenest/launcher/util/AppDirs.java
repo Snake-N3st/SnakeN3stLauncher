@@ -129,4 +129,26 @@ public final class AppDirs {
     public Path modpackSettingsFile(String modpackSlug) {
         return root.resolve("modpack-settings").resolve(modpackSlug + ".json");
     }
+
+    /**
+     * Shared pool of vanilla asset objects (see {@code game.assets.SharedAssetsLinker} in the
+     * launcher module), mirroring Mojang's own content-addressed {@code assets/objects/xx/xxxx...}
+     * layout - naturally collision-free and reusable across every modpack/Minecraft version, since
+     * Mojang already names these files by their own hash. Only used when the "Stockage des
+     * ressources vanilla" setting is set to share within the launcher (as opposed to per-modpack,
+     * or the official Minecraft launcher's own folder).
+     */
+    public Path sharedAssetsPool() {
+        return root.resolve("shared").resolve("assets");
+    }
+
+    /**
+     * Shared pool of vanilla + mod-loader library jars (and the vanilla client jar itself),
+     * mirroring the same relative paths Minecraft/FlowUpdater already use - these already encode
+     * group/artifact/version (or the Minecraft version, for the client jar), so this is naturally
+     * collision-free the same way {@link #sharedAssetsPool()} is.
+     */
+    public Path sharedLibrariesPool() {
+        return root.resolve("shared").resolve("libraries");
+    }
 }

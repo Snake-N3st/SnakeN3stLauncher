@@ -89,8 +89,9 @@ public final class LauncherAuthApiClient {
      * locally), but always attempted, since skipping it would leave a stolen key valid forever.
      */
     public void revokeKey(PlayerSession session) throws IOException, InterruptedException, LauncherApiException {
-        SignedParams signed = SignedRequestSigner.sign(session);
-        URI uri = Uris.withQuery(baseUrl.resolve("/api/launcher-auth/player/revoke"), signed.toQueryParams());
+        String path = "/api/launcher-auth/player/revoke";
+        SignedParams signed = SignedRequestSigner.sign(session, "POST", path);
+        URI uri = Uris.withQuery(baseUrl.resolve(path), signed.toQueryParams());
         JsonResponse response = http.postJson(uri, Map.of());
 
         if (!response.isSuccess()) {
@@ -100,7 +101,7 @@ public final class LauncherAuthApiClient {
 
     private <T> T fetchOne(String path, PlayerSession session, Class<T> type)
             throws IOException, InterruptedException, LauncherApiException {
-        SignedParams signed = SignedRequestSigner.sign(session);
+        SignedParams signed = SignedRequestSigner.sign(session, "GET", path);
         URI uri = Uris.withQuery(baseUrl.resolve(path), signed.toQueryParams());
         JsonResponse response = http.get(uri);
 

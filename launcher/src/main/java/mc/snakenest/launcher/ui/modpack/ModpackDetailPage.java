@@ -83,7 +83,7 @@ public final class ModpackDetailPage extends JPanel {
         headerText.add(javax.swing.Box.createVerticalGlue());
         headerText.add(nameLabel);
         headerText.add(new JLabel(viewModel.fileCount() + " fichiers"));
-        headerText.add(new JLabel(HumanSize.format(viewModel.totalSizeBytes())));
+        headerText.add(new JLabel(sizeLabelText(viewModel)));
         headerText.add(javax.swing.Box.createVerticalGlue());
         header.add(headerText, BorderLayout.CENTER);
 
@@ -174,6 +174,19 @@ public final class ModpackDetailPage extends JPanel {
         menu.add(uninstall);
 
         menu.show(anchor, 0, anchor.getHeight());
+    }
+
+    /**
+     * The modpack's declared size, plus its actual on-disk size in parentheses once installed -
+     * even a partial/interrupted install (see {@link ModpackDetailViewModel#installedSizeBytes},
+     * {@code null} exactly when there's nothing on disk yet to report).
+     */
+    private static String sizeLabelText(ModpackDetailViewModel viewModel) {
+        String text = HumanSize.format(viewModel.totalSizeBytes());
+        if (viewModel.installedSizeBytes() != null) {
+            text += " (Taille sur disque : " + HumanSize.format(viewModel.installedSizeBytes()) + ")";
+        }
+        return text;
     }
 
     /**

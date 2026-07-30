@@ -92,9 +92,9 @@ final class BootstrapSplash {
     }
 
     /**
-     * A blocking error dialog for when the bootstrap can't hand off to the launcher at all -
-     * the console message (always printed regardless) is the fallback if this can't show for
-     * any reason (headless, no display server, etc.).
+     * A blocking, non-retryable error dialog for a configuration problem retrying wouldn't fix
+     * (e.g. no valid clientId at all) - the console message (always printed regardless) is the
+     * fallback if this can't show for any reason (headless, no display server, etc.).
      */
     static void showFatalError(String message) {
         if (GraphicsEnvironment.isHeadless()) {
@@ -103,6 +103,54 @@ final class BootstrapSplash {
         try {
             SwingUtilities.invokeAndWait(() ->
                     JOptionPane.showMessageDialog(null, message, "SnakeN3st Launcher", JOptionPane.ERROR_MESSAGE));
+        } catch (Exception ignored) {
+            // Best-effort only.
+        }
+    }
+
+    /**
+     * Same as {@link #showFatalError}, but for a failure retrying might actually fix (a network
+     * hiccup, the site being briefly down, a transient download error) - offers "Réessayer" next
+     * to "Fermer" instead of a single "OK". Returns whether the player chose to retry; {@code
+     * BootstrapMain#main} loops back to the start of the startup attempt in that case. Bounded
+     * only by the player themselves clicking "Fermer" - there's a human in the loop, so this
+     * can't spin forever the way silently retrying on a timer could.
+     *
+     * @return {@code true} if the player chose to retry, {@code false} otherwise (including
+     * headless/no-display environments, where there's no one to click anything, so retrying
+     * automatically would risk looping forever on a persistent failure)
+     */
+    static boolean showFatalErrorWithRetry(String message) {
+        if (GraphicsEnvironment.isHeadless()) {
+            return false;
+        }
+        try {
+            Object[] options = {"Réessayer", "Fermer"};
+            int[] choice = {JOptionPane.CLOSED_OPTION};
+            SwingUtilities.invokeAndWait(() -> choice[0] = JOptionPane.showOptionDialog(
+                    null, message, "SnakeN3st Launcher",
+                    JOptionPane.DEFAULT_OPTION, JOptionPane.ERROR_MESSAGE,
+                    null, options, options[0]));
+            return choice[0] == 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * A blocking info dialog telling the player a self-update was just applied and they need to
+     * relaunch manually - see {@code BootstrapMain#selfUpdateIfNeeded}'s Javadoc for why the
+     * bootstrap doesn't just re-exec itself instead. A no-op in a headless environment, same as
+     * every other entry point here - the caller ({@code BootstrapMain#main}) already logs the
+     * same message regardless.
+     */
+    static void showRestartPrompt(String message) {
+        if (GraphicsEnvironment.isHeadless()) {
+            return;
+        }
+        try {
+            SwingUtilities.invokeAndWait(() ->
+                    JOptionPane.showMessageDialog(null, message, "SnakeN3st Launcher", JOptionPane.INFORMATION_MESSAGE));
         } catch (Exception ignored) {
             // Best-effort only.
         }

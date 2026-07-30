@@ -10,6 +10,12 @@ third-party library type:
   `game.flowupdater.FlowUpdaterGameInstallService`, the only class that
   imports `fr.flowarg.flowupdater.*` (GPL-3.0).
 
+- **`game.assets`** (own README) — the "Stockage des ressources vanilla"
+  setting: shares vanilla assets/libraries between modpacks by hardlinking
+  a pool into the instance around an otherwise completely untouched
+  `install()` call, instead of every instance keeping its own ~1GB copy.
+  Deliberately needs no fork of either third-party library.
+
 - **`GameLaunchService`** / **`LaunchRequest`** — spawn the actual
   Minecraft process for an already-installed instance. Implemented by
   `game.openlauncherlib.OpenLauncherLibGameLaunchService`, the only class

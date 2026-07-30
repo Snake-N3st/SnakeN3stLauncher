@@ -54,7 +54,17 @@ public final class FullShellPreview {
                 themeController::switchTo,
                 true,
                 enabled -> System.out.println("[preview] would " + (enabled ? "enable" : "disable") + " Discord status"),
+                mc.snakenest.launcher.config.AssetStorageMode.LAUNCHER_SHARED,
+                mode -> System.out.println("[preview] would store vanilla assets as " + mode),
+                false,
+                enable -> {
+                    System.out.println("[preview] would " + (enable ? "enable" : "disable") + " the PIN");
+                    // Echoes the request straight back, since there's no real dialog to cancel here.
+                    return enable;
+                },
+                () -> System.out.println("[preview] would migrate installed modpacks"),
                 () -> System.out.println("[preview] would open data folder"),
+                () -> System.out.println("[preview] would clean logs/crash reports/caches"),
                 () -> System.out.println("[preview] would log out")
         ));
 
@@ -108,6 +118,7 @@ public final class FullShellPreview {
                 126,
                 modpack.slug().equals("aventure-ultime"),
                 modpack.slug().equals("aventure-ultime"),
+                modpack.slug().equals("aventure-ultime") ? modpack.totalSize() / 2 : null,
                 null,
                 ModpackSettings.defaults(),
                 () -> System.out.println("[preview] would install/launch " + modpack.slug()),

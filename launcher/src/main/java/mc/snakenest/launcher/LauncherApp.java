@@ -6,10 +6,14 @@ import mc.snakenest.launcher.auth.LauncherApiException;
 import mc.snakenest.launcher.auth.LauncherAuthApiClient;
 import mc.snakenest.launcher.auth.PlayerInfo;
 import mc.snakenest.launcher.auth.PlayerSession;
+import mc.snakenest.launcher.config.AssetStorageMode;
 import mc.snakenest.launcher.config.ConfigStore;
 import mc.snakenest.launcher.config.LauncherConfig;
 import mc.snakenest.launcher.crypto.Ed25519KeyPair;
+import mc.snakenest.launcher.crypto.EncryptedFileKeyStorage;
 import mc.snakenest.launcher.crypto.KeyStorage;
+import mc.snakenest.launcher.crypto.KeyStorageException;
+import mc.snakenest.launcher.crypto.PinProtection;
 import mc.snakenest.launcher.discord.DiscordPresenceService;
 import mc.snakenest.launcher.game.GameInstallListener;
 import mc.snakenest.launcher.game.GameInstallService;
@@ -18,6 +22,8 @@ import mc.snakenest.launcher.game.InstallRequest;
 import mc.snakenest.launcher.game.InstallStep;
 import mc.snakenest.launcher.game.LaunchRequest;
 import mc.snakenest.launcher.game.OfflineUuids;
+import mc.snakenest.launcher.game.assets.SharedAssetsLinker;
+import mc.snakenest.launcher.maintenance.CleanupService;
 import mc.snakenest.launcher.modpack.LocalManifestStore;
 import mc.snakenest.launcher.modpack.ModpackApiClient;
 import mc.snakenest.launcher.modpack.ModpackManifest;
@@ -25,6 +31,7 @@ import mc.snakenest.launcher.modpack.ModpackSettings;
 import mc.snakenest.launcher.modpack.ModpackSettingsStore;
 import mc.snakenest.launcher.modpack.ModpackSummary;
 import mc.snakenest.launcher.modpack.ModpackSyncEngine;
+import mc.snakenest.launcher.modpack.SensitiveFileVault;
 import mc.snakenest.launcher.modpack.StoredManifest;
 import mc.snakenest.launcher.news.NewsApiClient;
 import mc.snakenest.launcher.news.Post;
@@ -43,14 +50,19 @@ import mc.snakenest.launcher.ui.news.NewsDetailPage;
 import mc.snakenest.launcher.ui.news.NewsListPage;
 import mc.snakenest.launcher.ui.news.NewsListViewModel;
 import mc.snakenest.launcher.ui.news.NewsSectionPage;
+import mc.snakenest.launcher.ui.pin.PinSetupDialog;
 import mc.snakenest.launcher.ui.settings.SettingsPage;
 import mc.snakenest.launcher.util.AppDirs;
+import mc.snakenest.launcher.util.HumanSize;
 import mc.snakenest.launcher.util.Log;
 
+import javax.crypto.SecretKey;
 import javax.swing.SwingUtilities;
 import java.awt.Desktop;
 import java.awt.image.BufferedImage;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -66,6 +78,17 @@ import java.util.stream.Collectors;
  */
 final class LauncherApp {
 
+    /**
+     * Shown both after a failed migration and once per session when an install falls back - the
+     * wording has to work in both, hence living here rather than being inlined twice.
+     */
+    private static final String HARDLINK_FALLBACK_MESSAGE =
+            "Le partage des ressources vanilla n'est pas possible sur ce système\n"
+                    + "(liens physiques indisponibles, souvent parce que les modpacks et le stockage\n"
+                    + "partagé sont sur des disques différents).\n\n"
+                    + "Chaque modpack garde donc sa propre copie, comme avec la troisième option.\n"
+                    + "Tout fonctionne normalement, mais sans économie d'espace disque.";
+
     private final AppDirs dirs;
     private final URI baseUrl;
     private final String clientId;
@@ -78,6 +101,18 @@ final class LauncherApp {
     private final GameInstallService gameInstallService;
     private final GameLaunchService gameLaunchService;
     private final ModpackSettingsStore modpackSettingsStore;
+    private final SharedAssetsLinker assetsLinker;
+    private final CleanupService cleanupService;
+    /** Guards the once-per-session hardlink-fallback warning - see {@link #notifyHardlinkFallback}. */
+    private final java.util.concurrent.atomic.AtomicBoolean hardlinkFallbackReported = new java.util.concurrent.atomic.AtomicBoolean();
+    private final PinProtection pinProtection;
+    /**
+     * The key derived from the PIN at startup, or {@code null} when no PIN is set. Held for the
+     * whole session because it's needed again on every launch/exit to un/re-seal a modpack's
+     * {@code .cryptlist} files - see {@link #launchGame}. Swapped (not just re-read) when the
+     * player turns the PIN on or off mid-session, hence {@code volatile} rather than final.
+     */
+    private volatile SecretKey pinKey;
     private final ExecutorService backgroundExecutor = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "launcher-background");
         t.setDaemon(true);
@@ -91,6 +126,13 @@ final class LauncherApp {
     private PlayerInfo playerInfo;
     private BufferedImage playerAvatar;
     private LauncherFrame shellFrame;
+    /**
+     * The login window, while it's up. Closed by {@link #showShell()} rather than by itself, so
+     * there is never a moment with no displayable window at all - AWT shuts the EDT down in that
+     * state, which used to kill the JVM (exit 0) mid-login while the player-info fetch was still
+     * running on a daemon thread.
+     */
+    private LoginFrame loginFrame;
 
     /** The one thing this launcher can be doing to a modpack at a time - never more than one in flight. */
     private enum Activity { INSTALLING, RUNNING, STOPPING }
@@ -128,7 +170,10 @@ final class LauncherApp {
 
     LauncherApp(AppDirs dirs, URI baseUrl, String clientId, ConfigStore configStore, ThemeController themeController,
                 LauncherAuthApiClient authApi, ModpackApiClient modpackApi, NewsApiClient newsApi, KeyStorage keyStorage,
-                GameInstallService gameInstallService, GameLaunchService gameLaunchService) {
+                GameInstallService gameInstallService, GameLaunchService gameLaunchService,
+                PinProtection pinProtection, SecretKey pinKey) {
+        this.pinProtection = pinProtection;
+        this.pinKey = pinKey;
         this.dirs = dirs;
         this.baseUrl = baseUrl;
         this.clientId = clientId;
@@ -141,6 +186,8 @@ final class LauncherApp {
         this.gameInstallService = gameInstallService;
         this.gameLaunchService = gameLaunchService;
         this.modpackSettingsStore = new ModpackSettingsStore(dirs);
+        this.assetsLinker = new SharedAssetsLinker(dirs);
+        this.cleanupService = new CleanupService(dirs);
 
         // Covers every exit path (window close, System.exit, Ctrl+C), not just an explicit
         // logout - Discord Rich Presence should disappear whenever the launcher actually quits.
@@ -161,6 +208,7 @@ final class LauncherApp {
      * before flashing to the real one.
      */
     void start() {
+        resealSensitiveFiles();
         fetchClientBrandingBlocking();
 
         Ed25519KeyPair storedKey = loadStoredKeyPair();
@@ -231,6 +279,269 @@ final class LauncherApp {
             presence.connect();
             presence.setBrowsing();
         });
+    }
+
+    /**
+     * Re-encrypts any {@code .cryptlist} file left in plaintext by a previous run that didn't get
+     * to finish (the launcher was killed, or the machine lost power, while a game was running -
+     * see {@link #launchGame}). Cheap when there's nothing to do, and skipped entirely without a
+     * PIN, so it can just run unconditionally at startup rather than needing a "did we crash?"
+     * flag to go stale.
+     */
+    private void resealSensitiveFiles() {
+        SecretKey key = pinKey;
+        if (key == null || !Files.isDirectory(dirs.instances())) {
+            return;
+        }
+        try (var instances = Files.list(dirs.instances())) {
+            for (Path instanceDir : instances.filter(Files::isDirectory).toList()) {
+                SensitiveFileVault.encryptAll(instanceDir, key);
+            }
+        } catch (java.io.IOException e) {
+            Log.warn(LauncherApp.class, "Could not re-seal sensitive modpack files at startup: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The Settings page's "Code PIN" checkbox. Turning it on re-encrypts the token under the new
+     * PIN-derived key (and deletes the on-disk wrapping key, which is what actually makes the PIN
+     * worth anything - see {@code crypto.PinProtection}); turning it off needs the current PIN,
+     * both to prove the player knows it and because the token has to be readable to be re-encrypted
+     * the other way.
+     *
+     * @return the state the checkbox should end up in, which is <em>not</em> always what was asked
+     *         for - a cancelled dialog or a wrong PIN leaves it as it was
+     */
+    private boolean setPinEnabled(boolean enable, java.awt.Component parent) {
+        if (enable == pinProtection.isEnabled()) {
+            return enable;
+        }
+        return enable ? enablePin(parent) : disablePin(parent);
+    }
+
+    private boolean enablePin(java.awt.Component parent) {
+        char[] pin = PinSetupDialog.askNewPin(parent);
+        if (pin == null) {
+            return false;
+        }
+        try {
+            SecretKey newKey = pinProtection.enable(pin);
+            // Re-encrypt whatever is currently stored under the new key. Without a session there's
+            // nothing to re-encrypt yet, and the next login will simply save under the PIN key.
+            Ed25519KeyPair current = loadStoredKeyPair();
+            pinKey = newKey;
+            if (current != null) {
+                EncryptedFileKeyStorage.withPin(dirs, newKey).save(current);
+            }
+            // Existing packs' sensitive files were plaintext until now - seal them immediately
+            // rather than waiting for the next game exit.
+            resealSensitiveFiles();
+            Log.info(LauncherApp.class, "PIN enabled.");
+            return true;
+        } catch (KeyStorageException e) {
+            Log.error(LauncherApp.class, "Could not enable the PIN", e);
+            pinProtection.disable();
+            pinKey = null;
+            javax.swing.JOptionPane.showMessageDialog(parent,
+                    "Impossible d'activer le code PIN : " + e.getMessage(),
+                    "Code PIN", javax.swing.JOptionPane.ERROR_MESSAGE);
+            return false;
+        } finally {
+            java.util.Arrays.fill(pin, '\0');
+        }
+    }
+
+    private boolean disablePin(java.awt.Component parent) {
+        char[] pin = PinSetupDialog.askCurrentPin(parent, "Désactiver le code PIN",
+                "Entre ton code PIN actuel pour le désactiver.");
+        if (pin == null) {
+            return true;
+        }
+        try {
+            SecretKey currentKey = pinProtection.deriveExisting(pin);
+            KeyStorage pinStorage = EncryptedFileKeyStorage.withPin(dirs, currentKey);
+            Ed25519KeyPair stored = pinStorage.load().orElse(null);
+
+            // Decrypt everything still sealed *before* dropping the key, or those files become
+            // unreadable forever.
+            decryptAllInstances(currentKey);
+
+            pinProtection.disable();
+            pinKey = null;
+            if (stored != null) {
+                // The no-PIN storage regenerates a wrapping key on demand and saves under it.
+                new EncryptedFileKeyStorage(dirs).save(stored);
+            }
+            Log.info(LauncherApp.class, "PIN disabled.");
+            return false;
+        } catch (KeyStorageException e) {
+            javax.swing.JOptionPane.showMessageDialog(parent, "Code incorrect.",
+                    "Code PIN", javax.swing.JOptionPane.WARNING_MESSAGE);
+            return true;
+        } finally {
+            java.util.Arrays.fill(pin, '\0');
+        }
+    }
+
+    private void decryptAllInstances(SecretKey key) {
+        if (!Files.isDirectory(dirs.instances())) {
+            return;
+        }
+        try (var instances = Files.list(dirs.instances())) {
+            for (Path instanceDir : instances.filter(Files::isDirectory).toList()) {
+                SensitiveFileVault.decryptAll(instanceDir, key);
+            }
+        } catch (java.io.IOException e) {
+            Log.warn(LauncherApp.class, "Could not decrypt sensitive modpack files: " + e.getMessage());
+        }
+    }
+
+    /** The Settings page's "Stockage des ressources vanilla" radio buttons. */
+    private void setAssetStorageMode(AssetStorageMode mode) {
+        var config = configStore.load();
+        config.setAssetStorageMode(mode);
+        configStore.save(config);
+    }
+
+    /**
+     * The "Migrer les modpacks déjà installés" button: applies the chosen storage mode to instances
+     * that are already on disk, which changing the setting alone deliberately doesn't do.
+     *
+     * <p>Refused outright while anything is installing or running - it moves and re-links the very
+     * files an install is writing or a game has open.
+     */
+    private void migrateAssetStorage(java.awt.Component parent) {
+        if (active != null) {
+            javax.swing.JOptionPane.showMessageDialog(parent,
+                    "Impossible de migrer pendant qu'un modpack est en cours d'installation ou de jeu.",
+                    "Migration", javax.swing.JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        AssetStorageMode mode = configStore.load().assetStorageMode();
+        if (javax.swing.JOptionPane.showConfirmDialog(parent,
+                describeMigration(mode) + "\n\nCela peut prendre un moment. Continuer ?",
+                "Migrer les modpacks installés",
+                javax.swing.JOptionPane.YES_NO_OPTION,
+                javax.swing.JOptionPane.QUESTION_MESSAGE) != javax.swing.JOptionPane.YES_OPTION) {
+            return;
+        }
+
+        backgroundExecutor.execute(() -> {
+            SharedAssetsLinker.MigrationResult total = new SharedAssetsLinker.MigrationResult(0, 0, 0, 0, false);
+            for (Path instanceDir : instanceDirectories()) {
+                SharedAssetsLinker.MigrationResult one = assetsLinker.migrate(instanceDir, mode);
+                total = new SharedAssetsLinker.MigrationResult(
+                        total.pooled() + one.pooled(),
+                        total.deduplicated() + one.deduplicated(),
+                        total.privatised() + one.privatised(),
+                        total.bytesReclaimed() + one.bytesReclaimed(),
+                        total.hardlinksFailed() || one.hardlinksFailed());
+            }
+            SharedAssetsLinker.MigrationResult result = total;
+            SwingUtilities.invokeLater(() -> showMigrationResult(parent, mode, result));
+        });
+    }
+
+    private String describeMigration(AssetStorageMode mode) {
+        return switch (mode) {
+            case LAUNCHER_SHARED -> "Les ressources vanilla déjà présentes dans chaque modpack vont être regroupées "
+                    + "dans le stockage partagé du launcher, et les copies en double remplacées par des liens.";
+            case OFFICIAL_MINECRAFT -> "Les ressources vanilla déjà présentes dans chaque modpack vont être regroupées "
+                    + "dans le dossier du lanceur officiel (.minecraft), et les copies en double remplacées par des liens.";
+            case PER_MODPACK -> "Chaque modpack va récupérer sa propre copie indépendante des ressources vanilla. "
+                    + "Cela va AUGMENTER l'espace disque utilisé.";
+        };
+    }
+
+    private void showMigrationResult(java.awt.Component parent, AssetStorageMode mode, SharedAssetsLinker.MigrationResult result) {
+        StringBuilder message = new StringBuilder();
+        if (mode == AssetStorageMode.PER_MODPACK) {
+            message.append(result.privatised()).append(" fichier(s) rendus indépendants.");
+        } else {
+            message.append(result.pooled()).append(" fichier(s) déplacés vers le stockage partagé,\n")
+                    .append(result.deduplicated()).append(" doublon(s) remplacés par des liens,\n")
+                    .append(HumanSize.format(result.bytesReclaimed())).append(" récupérés.");
+        }
+
+        if (result.hardlinksFailed()) {
+            // The one case the player genuinely needs told: everything "worked", but the sharing
+            // silently didn't happen - see notifyHardlinkFallback.
+            message.append("\n\n").append(HARDLINK_FALLBACK_MESSAGE);
+            javax.swing.JOptionPane.showMessageDialog(parent, message.toString(), "Migration", javax.swing.JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        javax.swing.JOptionPane.showMessageDialog(parent, message.toString(), "Migration", javax.swing.JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    /**
+     * The "Nettoyer" button. Previews first so the confirmation can state a real size, then deletes
+     * off the EDT (walking every instance can take a moment on a big install).
+     */
+    private void runCleanup(java.awt.Component parent) {
+        if (active != null) {
+            javax.swing.JOptionPane.showMessageDialog(parent,
+                    "Impossible de nettoyer pendant qu'un modpack est en cours d'installation ou de jeu.",
+                    "Nettoyage", javax.swing.JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        backgroundExecutor.execute(() -> {
+            CleanupService.Result preview = cleanupService.preview();
+            SwingUtilities.invokeLater(() -> {
+                if (preview.filesDeleted() == 0) {
+                    javax.swing.JOptionPane.showMessageDialog(parent, "Rien à nettoyer.",
+                            "Nettoyage", javax.swing.JOptionPane.INFORMATION_MESSAGE);
+                    return;
+                }
+                int choice = javax.swing.JOptionPane.showConfirmDialog(parent,
+                        "Supprimer " + preview.filesDeleted() + " fichier(s) (" + HumanSize.format(preview.bytesFreed()) + ") ?\n\n"
+                                + "Logs du launcher, logs et rapports de crash des modpacks, caches de téléchargement.\n"
+                                + "Tes mods, configs, mondes et ta session ne sont pas touchés.",
+                        "Nettoyage", javax.swing.JOptionPane.YES_NO_OPTION, javax.swing.JOptionPane.QUESTION_MESSAGE);
+                if (choice != javax.swing.JOptionPane.YES_OPTION) {
+                    return;
+                }
+                backgroundExecutor.execute(() -> {
+                    CleanupService.Result result = cleanupService.cleanEverything();
+                    SwingUtilities.invokeLater(() -> javax.swing.JOptionPane.showMessageDialog(parent,
+                            result.filesDeleted() + " fichier(s) supprimés, " + HumanSize.format(result.bytesFreed()) + " libérés.",
+                            "Nettoyage", javax.swing.JOptionPane.INFORMATION_MESSAGE));
+                });
+            });
+        });
+    }
+
+    /**
+     * Tells the player, once per session, that asset sharing silently isn't happening.
+     *
+     * <p>Worth surfacing rather than only logging: everything still installs and runs correctly, so
+     * the only visible symptom is disk usage quietly behaving like the per-modpack option even
+     * though a sharing option is selected - which looks like the setting simply not working.
+     *
+     * <p>Once per session because it's a property of the filesystem layout, not of this particular
+     * install: it will keep failing identically for every modpack, and a dialog on each one would
+     * just train the player to dismiss it.
+     */
+    private void notifyHardlinkFallback() {
+        if (!hardlinkFallbackReported.compareAndSet(false, true)) {
+            return;
+        }
+        Log.warn(LauncherApp.class, "Hardlink sharing unavailable - behaving as PER_MODPACK for this session.");
+        SwingUtilities.invokeLater(() -> javax.swing.JOptionPane.showMessageDialog(shellFrame,
+                HARDLINK_FALLBACK_MESSAGE, "Stockage des ressources vanilla", javax.swing.JOptionPane.WARNING_MESSAGE));
+    }
+
+    private List<Path> instanceDirectories() {
+        if (!Files.isDirectory(dirs.instances())) {
+            return List.of();
+        }
+        try (var stream = Files.list(dirs.instances())) {
+            return stream.filter(Files::isDirectory).toList();
+        } catch (java.io.IOException e) {
+            Log.warn(LauncherApp.class, "Could not list instances: " + e.getMessage());
+            return List.of();
+        }
     }
 
     /** The Settings page's "Afficher mon statut sur Discord" checkbox. */
@@ -308,6 +619,10 @@ final class LauncherApp {
             Ed25519KeyPair key = loadStoredKeyPair();
             if (key == null) {
                 Log.error(LauncherApp.class, "Login reported success but no key is stored - cannot continue", null);
+                LoginFrame stuckFrame = this.loginFrame;
+                if (stuckFrame != null) {
+                    stuckFrame.showPostLoginFailure("Connexion reussie mais la cle n'a pas pu etre enregistree. Reessaie.");
+                }
                 return;
             }
             session = new PlayerSession(key, playerId, clientId);
@@ -322,6 +637,9 @@ final class LauncherApp {
         if (clientLogo != null) {
             loginFrame.setIconImage(clientLogo);
         }
+        // Kept so showShell can close it only once the shell window exists - see LoginFrame's
+        // onSucceeded, which deliberately no longer disposes itself.
+        this.loginFrame = loginFrame;
         loginFrame.setVisible(true);
     }
 
@@ -337,7 +655,13 @@ final class LauncherApp {
                 themeController::switchTo,
                 configStore.load().discordEnabled(),
                 this::setDiscordEnabled,
+                configStore.load().assetStorageMode(),
+                this::setAssetStorageMode,
+                pinProtection.isEnabled(),
+                enable -> setPinEnabled(enable, frame),
+                () -> migrateAssetStorage(frame),
                 () -> openFolder(dirs.root()),
+                () -> runCleanup(frame),
                 this::logout
         ));
         frame.addPage(NavTarget.NEWS, newsSection);
@@ -361,6 +685,13 @@ final class LauncherApp {
             frame.setIconImage(clientLogo);
         }
         frame.setVisible(true);
+
+        // Only now that the shell is on screen is it safe to drop the login window - see the
+        // loginFrame field. No-op when there was no login this run (a stored session).
+        if (loginFrame != null) {
+            loginFrame.dispose();
+            loginFrame = null;
+        }
     }
 
     /** Shows the cached {@link #playerInfo}/{@link #playerAvatar} - never makes a network call itself. */
@@ -536,6 +867,7 @@ final class LauncherApp {
                         ModpackSettings.defaults(manifest.defaultMemoryMb(), manifest.defaultJvmArgs()));
                 BufferedImage logo = RemoteImages.tryLoad(modpack.image());
                 boolean updateAvailable = isUpdateAvailable(modpack.slug(), manifest.version());
+                Long installedSizeBytes = installedSizeBytes(dirs.instance(modpack.slug()));
                 SwingUtilities.invokeLater(() -> {
                     ModpackDetailViewModel viewModel = new ModpackDetailViewModel(
                             modpack.slug(),
@@ -546,6 +878,7 @@ final class LauncherApp {
                             manifest.files().size(),
                             installed,
                             updateAvailable,
+                            installedSizeBytes,
                             logo,
                             settings,
                             () -> installAndLaunch(modpack, manifest),
@@ -948,6 +1281,32 @@ final class LauncherApp {
     }
 
     /**
+     * Actual on-disk size of the instance directory, not the manifest's declared total -
+     * deliberately reflects reality even mid-install (a cancelled/interrupted sync leaves some
+     * files present and others not) rather than assuming a successful sync ever completed. {@code
+     * null} if there's no instance directory at all yet (never installed).
+     */
+    private Long installedSizeBytes(java.nio.file.Path instanceDir) {
+        if (!java.nio.file.Files.isDirectory(instanceDir)) {
+            return null;
+        }
+        try (var paths = java.nio.file.Files.walk(instanceDir)) {
+            return paths.filter(java.nio.file.Files::isRegularFile)
+                    .mapToLong(path -> {
+                        try {
+                            return java.nio.file.Files.size(path);
+                        } catch (java.io.IOException e) {
+                            return 0L;
+                        }
+                    })
+                    .sum();
+        } catch (java.io.IOException e) {
+            Log.warn(LauncherApp.class, "Could not compute installed size for " + instanceDir + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * The offline UUID launched with is derived from the username - if it
      * changed since the cached {@link #playerInfo} was fetched (login or
      * startup), this session's UUID won't match earlier ones, which matters
@@ -967,7 +1326,9 @@ final class LauncherApp {
             page.setStatus("Synchronisation des fichiers...");
             page.setProgress(0);
         });
-        var syncEngine = new ModpackSyncEngine(new mc.snakenest.launcher.modpack.ModpackFileDownloader(modpackApi), new LocalManifestStore());
+        var syncEngine = new ModpackSyncEngine(
+                new mc.snakenest.launcher.modpack.ModpackFileDownloader(modpackApi, new mc.snakenest.launcher.net.HttpJsonClient()),
+                new LocalManifestStore());
         syncEngine.sync(modpack.slug(), dirs.instance(modpack.slug()), manifest, session, new mc.snakenest.launcher.modpack.SyncProgressListener() {
             @Override
             public void onFileStarted(String path, long size) {
@@ -986,7 +1347,16 @@ final class LauncherApp {
 
     private void installGame(ModpackSummary modpack, ModpackManifest manifest) throws Exception {
         withDetailPage(modpack.slug(), page -> page.setStatus("Installation du jeu..."));
-        InstallRequest request = new InstallRequest(manifest.mcVersion(), manifest.modLoader(), manifest.loaderVersion(), dirs.instance(modpack.slug()));
+        Path instanceDir = dirs.instance(modpack.slug());
+        AssetStorageMode assetStorageMode = configStore.load().assetStorageMode();
+
+        // Hardlinks whatever's already in the shared pool into the instance first, so
+        // FlowUpdater's own "already present, skip" check does the actual sharing - see
+        // SharedAssetsLinker's own Javadoc for why this needs no fork of FlowUpdater/
+        // OpenLauncherLib. No-op for AssetStorageMode.PER_MODPACK.
+        boolean sharingWorked = assetsLinker.preSeed(instanceDir, assetStorageMode);
+
+        InstallRequest request = new InstallRequest(manifest.mcVersion(), manifest.modLoader(), manifest.loaderVersion(), instanceDir);
         gameInstallService.install(request, new GameInstallListener() {
             @Override
             public void onStepStarted(InstallStep step) {
@@ -1000,16 +1370,35 @@ final class LauncherApp {
                 }
             }
         });
+
+        // Moves whatever FlowUpdater just downloaded fresh into the pool and hardlinks it back,
+        // so the next modpack/reinstall benefits too.
+        sharingWorked &= assetsLinker.absorb(instanceDir, assetStorageMode);
+
+        if (!sharingWorked) {
+            notifyHardlinkFallback();
+        }
+
         withDetailPage(modpack.slug(), page -> page.setProgress(-1));
     }
 
     private void launchGame(ModpackSummary modpack, ModpackManifest manifest, String username) throws Exception {
         ModpackSettings settings = modpackSettingsStore.load(modpack.slug(),
                 ModpackSettings.defaults(manifest.defaultMemoryMb(), manifest.defaultJvmArgs()));
+        Path instanceDir = dirs.instance(modpack.slug());
+
+        // The game can't read its own .cryptlist files while they're encrypted, so the plaintext
+        // window is opened here and closed again in onExit below - see SensitiveFileVault. No-op
+        // without a PIN (nothing is ever encrypted in that case).
+        SecretKey key = pinKey;
+        if (key != null) {
+            SensitiveFileVault.decryptAll(instanceDir, key);
+        }
+
         LaunchRequest request = new LaunchRequest(
                 username,
                 OfflineUuids.forUsername(username),
-                dirs.instance(modpack.slug()),
+                instanceDir,
                 manifest.mcVersion(),
                 manifest.modLoader(),
                 manifest.loaderVersion(),
@@ -1025,6 +1414,13 @@ final class LauncherApp {
             discordPresence.setPlaying(modpack.name());
         }
         process.onExit().thenRun(() -> {
+            // Re-seals the .cryptlist files the launch just decrypted. Runs before the UI updates
+            // so "the game is stopped" and "the secrets are sealed again" become true together.
+            SecretKey exitKey = pinKey;
+            if (exitKey != null) {
+                SensitiveFileVault.encryptAll(instanceDir, exitKey);
+            }
+
             ActiveModpack current = active;
             if (current != null && current.gameProcess() == process) {
                 active = null;

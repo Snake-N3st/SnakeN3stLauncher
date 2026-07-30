@@ -56,14 +56,15 @@ public final class ModpackApiClient {
      * {@link RawResponse#isSuccess()} and close the response.
      */
     public RawResponse downloadBlob(String slug, String hash, PlayerSession session) throws IOException, InterruptedException {
-        SignedParams signed = SignedRequestSigner.sign(session);
-        URI uri = Uris.withQuery(baseUrl.resolve("/api/modpacks/" + slug + "/blob/" + hash), signed.toQueryParams());
+        String path = "/api/modpacks/" + slug + "/blob/" + hash;
+        SignedParams signed = SignedRequestSigner.sign(session, "GET", path);
+        URI uri = Uris.withQuery(baseUrl.resolve(path), signed.toQueryParams());
         return http.getRaw(uri);
     }
 
     private JsonResponse get(String path, Map<String, String> extraParams, PlayerSession session)
             throws IOException, InterruptedException {
-        SignedParams signed = SignedRequestSigner.sign(session);
+        SignedParams signed = SignedRequestSigner.sign(session, "GET", path);
         Map<String, String> params = signed.toQueryParams();
         params.putAll(extraParams);
         URI uri = Uris.withQuery(baseUrl.resolve(path), params);

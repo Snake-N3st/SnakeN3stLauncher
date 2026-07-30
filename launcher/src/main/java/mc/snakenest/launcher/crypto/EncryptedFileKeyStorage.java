@@ -3,79 +3,91 @@ package mc.snakenest.launcher.crypto;
 import mc.snakenest.launcher.util.AppDirs;
 import mc.snakenest.launcher.util.AtomicFiles;
 
-import javax.crypto.Cipher;
-import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
-import java.util.Arrays;
 import java.util.Optional;
 
 /**
- * Stores the player's Ed25519 seed encrypted at rest (AES-256-GCM) under
- * {@link AppDirs#secure()}, with the encryption key kept in a separate file,
- * both permission-restricted via {@link SecureFilePermissions}. See that
- * class's javadoc for what this does and doesn't protect against.
+ * Stores the player's Ed25519 seed encrypted at rest (AES-256-GCM, via {@link SecretBox}) under
+ * {@link AppDirs#secure()}, in one of two modes:
+ *
+ * <ul>
+ *   <li><b>no PIN</b> ({@link #EncryptedFileKeyStorage(AppDirs)}) - the encryption key is
+ *   generated once and kept in {@code wrap.key} right next to the encrypted seed, both
+ *   permission-restricted via {@link SecureFilePermissions}. Convenient (nothing to type at
+ *   startup) but, by construction, anything able to read one file can read the other.
+ *   <li><b>PIN</b> ({@link #withPin}) - the key is derived from the player's PIN instead
+ *   ({@link PinProtection}) and {@code wrap.key} is deleted, so no key material is left on disk
+ *   at all. See {@link PinProtection}'s Javadoc for the honest limits of that.
+ * </ul>
+ *
+ * See {@link SecureFilePermissions}'s Javadoc for what the permission tightening does and doesn't
+ * protect against in either mode.
  */
 public final class EncryptedFileKeyStorage implements KeyStorage {
 
-    private static final int GCM_IV_LENGTH = 12;
-    private static final int GCM_TAG_LENGTH_BITS = 128;
     private static final int AES_KEY_LENGTH_BYTES = 32;
 
     private final Path wrappingKeyFile;
     private final Path encryptedKeyFile;
+    /** {@code null} means "no PIN" - fall back to the {@link #wrappingKeyFile} on disk. */
+    private final SecretKey pinKey;
     private final SecureRandom random = new SecureRandom();
 
     public EncryptedFileKeyStorage(AppDirs dirs) {
+        this(dirs, null);
+    }
+
+    /** @param pinKey already derived from the player's PIN by {@link PinProtection} - never the PIN itself */
+    public static EncryptedFileKeyStorage withPin(AppDirs dirs, SecretKey pinKey) {
+        return new EncryptedFileKeyStorage(dirs, pinKey);
+    }
+
+    private EncryptedFileKeyStorage(AppDirs dirs, SecretKey pinKey) {
         this.wrappingKeyFile = dirs.secure().resolve("wrap.key");
         this.encryptedKeyFile = dirs.secure().resolve("key.bin");
+        this.pinKey = pinKey;
     }
 
     @Override
     public void save(Ed25519KeyPair keyPair) throws KeyStorageException {
         try {
-            SecretKeySpec wrappingKey = loadOrCreateWrappingKey();
-
-            byte[] iv = new byte[GCM_IV_LENGTH];
-            random.nextBytes(iv);
-
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(Cipher.ENCRYPT_MODE, wrappingKey, new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv));
-            byte[] ciphertext = cipher.doFinal(keyPair.seed());
-
-            byte[] out = new byte[iv.length + ciphertext.length];
-            System.arraycopy(iv, 0, out, 0, iv.length);
-            System.arraycopy(ciphertext, 0, out, iv.length, ciphertext.length);
-
-            AtomicFiles.write(encryptedKeyFile, out);
+            byte[] blob = SecretBox.encrypt(encryptionKey(), keyPair.seed());
+            AtomicFiles.write(encryptedKeyFile, blob);
             SecureFilePermissions.restrictToOwner(encryptedKeyFile);
+
+            // A PIN-protected vault must never leave a usable wrapping key behind - that file
+            // existing at all would defeat the entire point of the PIN (see PinProtection).
+            if (pinKey != null) {
+                Files.deleteIfExists(wrappingKeyFile);
+            }
         } catch (IOException | GeneralSecurityException e) {
             throw new KeyStorageException("Could not save the encrypted key", e);
         }
     }
 
+    /**
+     * @return empty when nothing is stored yet
+     * @throws KeyStorageException on a wrong PIN, among other failures - a wrong PIN derives a
+     *                             different key, whose GCM tag then fails to authenticate (see
+     *                             {@link SecretBox}), which is exactly how the unlock dialog
+     *                             detects it
+     */
     @Override
     public Optional<Ed25519KeyPair> load() throws KeyStorageException {
-        if (!Files.isRegularFile(encryptedKeyFile) || !Files.isRegularFile(wrappingKeyFile)) {
+        if (!Files.isRegularFile(encryptedKeyFile)) {
+            return Optional.empty();
+        }
+        if (pinKey == null && !Files.isRegularFile(wrappingKeyFile)) {
             return Optional.empty();
         }
         try {
-            SecretKeySpec wrappingKey = loadOrCreateWrappingKey();
-            byte[] stored = Files.readAllBytes(encryptedKeyFile);
-            if (stored.length <= GCM_IV_LENGTH) {
-                throw new KeyStorageException("Stored key file is truncated");
-            }
-            byte[] iv = Arrays.copyOfRange(stored, 0, GCM_IV_LENGTH);
-            byte[] ciphertext = Arrays.copyOfRange(stored, GCM_IV_LENGTH, stored.length);
-
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(Cipher.DECRYPT_MODE, wrappingKey, new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv));
-            byte[] seed = cipher.doFinal(ciphertext);
-
+            byte[] seed = SecretBox.decrypt(encryptionKey(), Files.readAllBytes(encryptedKeyFile));
             return Optional.of(Ed25519KeyPair.fromSeed(seed));
         } catch (IOException | GeneralSecurityException e) {
             throw new KeyStorageException("Could not read the encrypted key", e);
@@ -92,7 +104,11 @@ public final class EncryptedFileKeyStorage implements KeyStorage {
         }
     }
 
-    private SecretKeySpec loadOrCreateWrappingKey() throws IOException {
+    private SecretKey encryptionKey() throws IOException {
+        return pinKey != null ? pinKey : loadOrCreateWrappingKey();
+    }
+
+    private SecretKey loadOrCreateWrappingKey() throws IOException {
         if (Files.isRegularFile(wrappingKeyFile)) {
             return new SecretKeySpec(Files.readAllBytes(wrappingKeyFile), "AES");
         }

@@ -38,13 +38,14 @@ final class LauncherReleaseClient {
         this.clientId = clientId;
     }
 
-    LauncherReleaseInfo fetchLatest() throws IOException, InterruptedException, BootstrapException {
-        URI uri = baseUrl.resolve("/api/launcher-auth/releases/latest?client_id=" + encode(clientId));
+    /** @param type {@link ReleaseType#LAUNCHER} or {@link ReleaseType#BOOTSTRAP} - see its Javadoc. */
+    LauncherReleaseInfo fetchLatest(ReleaseType type) throws IOException, InterruptedException, BootstrapException {
+        URI uri = baseUrl.resolve("/api/launcher-auth/releases/" + type.apiValue() + "/latest?client_id=" + encode(clientId));
         HttpRequest request = HttpRequest.newBuilder(uri).timeout(TIMEOUT).header("Accept", "application/json").GET().build();
         HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() != 200) {
-            throw new BootstrapException("Could not fetch the latest launcher release (status " + response.statusCode() + ")");
+            throw new BootstrapException("Could not fetch the latest " + type.apiValue() + " release (status " + response.statusCode() + ")");
         }
         return GSON.fromJson(response.body(), LauncherReleaseInfo.class);
     }
