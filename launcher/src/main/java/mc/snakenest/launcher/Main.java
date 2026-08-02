@@ -1,6 +1,8 @@
 package mc.snakenest.launcher;
 
 import mc.snakenest.launcher.auth.LauncherAuthApiClient;
+import mc.snakenest.launcher.bugreport.BugReportApiClient;
+import mc.snakenest.launcher.bugreport.CrashReportHandler;
 import mc.snakenest.launcher.config.ConfigStore;
 import mc.snakenest.launcher.crypto.EncryptedFileKeyStorage;
 import mc.snakenest.launcher.crypto.KeyStorage;
@@ -53,11 +55,17 @@ public final class Main {
         }
         URI baseUrl = URI.create(System.getProperty("sn3.baseUrl", DEFAULT_BASE_URL));
 
+        HttpJsonClient http = new HttpJsonClient();
+        // Installed before anything else is built, so a crash during the rest of this method (or
+        // any point afterward) is still caught - see CrashReportHandler's own Javadoc for why the
+        // EDT needs a second, separate hook alongside the JVM's normal default handler.
+        BugReportApiClient bugReportApi = new BugReportApiClient(http, baseUrl, clientId);
+        CrashReportHandler.install(bugReportApi);
+
         ConfigStore configStore = new ConfigStore(dirs);
         ThemeController themeController = new ThemeController(configStore);
         themeController.applyStartupTheme();
 
-        HttpJsonClient http = new HttpJsonClient();
         LauncherAuthApiClient authApi = new LauncherAuthApiClient(http, baseUrl);
         ModpackApiClient modpackApi = new ModpackApiClient(http, baseUrl);
         NewsApiClient newsApi = new NewsApiClient(http, baseUrl);
@@ -75,7 +83,7 @@ public final class Main {
 
         LauncherApp app = new LauncherApp(dirs, baseUrl, clientId, configStore, themeController,
                 authApi, modpackApi, newsApi, keyStorage, gameInstallService, gameLaunchService,
-                pinProtection, pinKey);
+                pinProtection, pinKey, bugReportApi);
 
         // Not wrapped in invokeLater: start() fetches client/player branding over the
         // network before constructing any window, and must do so off the EDT to avoid

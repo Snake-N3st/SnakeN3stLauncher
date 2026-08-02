@@ -34,7 +34,8 @@ public final class SettingsPage extends JPanel {
                          AssetStorageMode currentAssetStorageMode, Consumer<AssetStorageMode> onAssetStorageModeChanged,
                          boolean pinEnabled, java.util.function.Predicate<Boolean> onPinToggled,
                          Runnable onMigrateAssetStorage,
-                         Runnable onOpenDataFolder, Runnable onCleanup, Runnable onLogout) {
+                         Runnable onOpenDataFolder, Runnable onCleanup,
+                         boolean bugReportsEnabled, Runnable onReportBug, Runnable onLogout) {
         setLayout(new BorderLayout());
         setBorder(new EmptyBorder(24, 24, 24, 24));
 
@@ -57,6 +58,14 @@ public final class SettingsPage extends JPanel {
 
         content.add(section("Données", dataRows(onOpenDataFolder, onCleanup)));
         content.add(javax.swing.Box.createVerticalStrut(24));
+
+        // Hidden entirely rather than shown-but-disabled when the site has turned reporting off
+        // for this client: a greyed-out button invites "why can't I report this?", an absent
+        // section just isn't a feature this launcher has.
+        if (bugReportsEnabled) {
+            content.add(section("Support", supportRows(onReportBug)));
+            content.add(javax.swing.Box.createVerticalStrut(24));
+        }
 
         JPanel logoutRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         logoutRow.setOpaque(false);
@@ -269,6 +278,29 @@ public final class SettingsPage extends JPanel {
 
         JLabel help = new JLabel("Supprime les logs, les rapports de crash et les caches. "
                 + "Ne touche pas aux mods, configs, mondes, ni à ta session.");
+        help.setAlignmentX(Component.LEFT_ALIGNMENT);
+        help.setFont(help.getFont().deriveFont(Font.PLAIN, 12f));
+        help.setForeground(javax.swing.UIManager.getColor("Label.disabledForeground"));
+        help.setBorder(new EmptyBorder(4, 0, 0, 0));
+        column.add(help);
+
+        return column;
+    }
+
+    private JPanel supportRows(Runnable onReportBug) {
+        JPanel column = new JPanel();
+        column.setOpaque(false);
+        column.setLayout(new BoxLayout(column, BoxLayout.Y_AXIS));
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        buttons.setOpaque(false);
+        buttons.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JButton reportBug = new JButton("Signaler un bug");
+        reportBug.addActionListener(e -> onReportBug.run());
+        buttons.add(reportBug);
+        column.add(buttons);
+
+        JLabel help = new JLabel("Envoie un rapport (avec ta description et des infos techniques) à l'équipe.");
         help.setAlignmentX(Component.LEFT_ALIGNMENT);
         help.setFont(help.getFont().deriveFont(Font.PLAIN, 12f));
         help.setForeground(javax.swing.UIManager.getColor("Label.disabledForeground"));

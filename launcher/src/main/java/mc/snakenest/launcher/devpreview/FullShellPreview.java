@@ -65,6 +65,8 @@ public final class FullShellPreview {
                 () -> System.out.println("[preview] would migrate installed modpacks"),
                 () -> System.out.println("[preview] would open data folder"),
                 () -> System.out.println("[preview] would clean logs/crash reports/caches"),
+                true,
+                () -> System.out.println("[preview] would open the manual bug-report dialog"),
                 () -> System.out.println("[preview] would log out")
         ));
 

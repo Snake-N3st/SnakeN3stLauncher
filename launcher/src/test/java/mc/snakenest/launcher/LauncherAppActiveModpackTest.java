@@ -1,6 +1,7 @@
 package mc.snakenest.launcher;
 
 import mc.snakenest.launcher.auth.LauncherAuthApiClient;
+import mc.snakenest.launcher.bugreport.BugReportApiClient;
 import mc.snakenest.launcher.config.ConfigStore;
 import mc.snakenest.launcher.crypto.KeyStorage;
 import mc.snakenest.launcher.game.GameInstallService;
@@ -55,7 +56,7 @@ class LauncherAppActiveModpackTest {
         return new LauncherApp(dirs, URI.create("http://127.0.0.1"), "test-client-id", configStore,
                 new ThemeController(configStore), mock(LauncherAuthApiClient.class), mock(ModpackApiClient.class),
                 mock(NewsApiClient.class), mock(KeyStorage.class), mock(GameInstallService.class), mock(GameLaunchService.class),
-                new mc.snakenest.launcher.crypto.PinProtection(dirs), null);
+                new mc.snakenest.launcher.crypto.PinProtection(dirs), null, mock(BugReportApiClient.class));
     }
 
     private static Object activeModpack(String slug, String activityName, Object installTask, Process gameProcess) throws Exception {

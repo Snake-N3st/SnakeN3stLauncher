@@ -6,6 +6,8 @@ import mc.snakenest.launcher.auth.LauncherApiException;
 import mc.snakenest.launcher.auth.LauncherAuthApiClient;
 import mc.snakenest.launcher.auth.PlayerInfo;
 import mc.snakenest.launcher.auth.PlayerSession;
+import mc.snakenest.launcher.bugreport.BugReportApiClient;
+import mc.snakenest.launcher.bugreport.BugReportType;
 import mc.snakenest.launcher.config.AssetStorageMode;
 import mc.snakenest.launcher.config.ConfigStore;
 import mc.snakenest.launcher.config.LauncherConfig;
@@ -50,6 +52,8 @@ import mc.snakenest.launcher.ui.news.NewsDetailPage;
 import mc.snakenest.launcher.ui.news.NewsListPage;
 import mc.snakenest.launcher.ui.news.NewsListViewModel;
 import mc.snakenest.launcher.ui.news.NewsSectionPage;
+import mc.snakenest.launcher.ui.bugreport.CrashPromptDialog;
+import mc.snakenest.launcher.ui.bugreport.ManualBugReportDialog;
 import mc.snakenest.launcher.ui.pin.PinSetupDialog;
 import mc.snakenest.launcher.ui.settings.SettingsPage;
 import mc.snakenest.launcher.util.AppDirs;
@@ -103,6 +107,7 @@ final class LauncherApp {
     private final ModpackSettingsStore modpackSettingsStore;
     private final SharedAssetsLinker assetsLinker;
     private final CleanupService cleanupService;
+    private final BugReportApiClient bugReportApi;
     /** Guards the once-per-session hardlink-fallback warning - see {@link #notifyHardlinkFallback}. */
     private final java.util.concurrent.atomic.AtomicBoolean hardlinkFallbackReported = new java.util.concurrent.atomic.AtomicBoolean();
     private final PinProtection pinProtection;
@@ -171,7 +176,7 @@ final class LauncherApp {
     LauncherApp(AppDirs dirs, URI baseUrl, String clientId, ConfigStore configStore, ThemeController themeController,
                 LauncherAuthApiClient authApi, ModpackApiClient modpackApi, NewsApiClient newsApi, KeyStorage keyStorage,
                 GameInstallService gameInstallService, GameLaunchService gameLaunchService,
-                PinProtection pinProtection, SecretKey pinKey) {
+                PinProtection pinProtection, SecretKey pinKey, BugReportApiClient bugReportApi) {
         this.pinProtection = pinProtection;
         this.pinKey = pinKey;
         this.dirs = dirs;
@@ -188,6 +193,7 @@ final class LauncherApp {
         this.modpackSettingsStore = new ModpackSettingsStore(dirs);
         this.assetsLinker = new SharedAssetsLinker(dirs);
         this.cleanupService = new CleanupService(dirs);
+        this.bugReportApi = bugReportApi;
 
         // Covers every exit path (window close, System.exit, Ctrl+C), not just an explicit
         // logout - Discord Rich Presence should disappear whenever the launcher actually quits.
@@ -512,6 +518,22 @@ final class LauncherApp {
         });
     }
 
+    /** The "Signaler un bug" button - a voluntary report, no crash involved. */
+    private void reportBug(java.awt.Component parent) {
+        ManualBugReportDialog.Input input = ManualBugReportDialog.ask(parent);
+        if (input == null) {
+            return;
+        }
+        String modpackSlug = active != null ? active.slug() : null;
+        backgroundExecutor.execute(() -> {
+            boolean sent = bugReportApi.submit(BugReportType.MANUAL, input.summary(), input.description(), null, modpackSlug);
+            SwingUtilities.invokeLater(() -> javax.swing.JOptionPane.showMessageDialog(parent,
+                    sent ? "Rapport envoyé, merci !" : "Impossible d'envoyer le rapport (pas de connexion au serveur ?).",
+                    "Signaler un bug",
+                    sent ? javax.swing.JOptionPane.INFORMATION_MESSAGE : javax.swing.JOptionPane.WARNING_MESSAGE));
+        });
+    }
+
     /**
      * Tells the player, once per session, that asset sharing silently isn't happening.
      *
@@ -662,6 +684,11 @@ final class LauncherApp {
                 () -> migrateAssetStorage(frame),
                 () -> openFolder(dirs.root()),
                 () -> runCleanup(frame),
+                // Unreachable client info (offline start) means the button stays available - a
+                // failed submit is a better outcome than silently hiding a feature the site
+                // actually allows. See ClientInfo#bugReportsAllowed.
+                clientInfo == null || clientInfo.bugReportsAllowed(),
+                () -> reportBug(frame),
                 this::logout
         ));
         frame.addPage(NavTarget.NEWS, newsSection);
@@ -1407,6 +1434,7 @@ final class LauncherApp {
                 session.key().seedHex()
         );
         Process process = gameLaunchService.launch(request);
+        java.time.Instant launchedAt = java.time.Instant.now();
         active = new ActiveModpack(modpack.slug(), Activity.RUNNING, null, process);
         withDetailPage(modpack.slug(), page -> page.setRunning(true));
         setCardRunning(modpack.slug(), true);
@@ -1422,6 +1450,10 @@ final class LauncherApp {
             }
 
             ActiveModpack current = active;
+            // STOPPING means the player clicked "Arreter"/"Tuer" (see stopGame/killGame) -
+            // destroy()/destroyForcibly() also produce a non-zero exit that looks like a crash
+            // from the outside, so this is what tells the two apart without a dedicated flag.
+            boolean playerRequestedStop = current != null && current.activity() == Activity.STOPPING;
             if (current != null && current.gameProcess() == process) {
                 active = null;
             }
@@ -1435,7 +1467,72 @@ final class LauncherApp {
             if (discordPresence != null) {
                 discordPresence.setBrowsing();
             }
+            if (!playerRequestedStop) {
+                promptGameCrashReport(modpack, instanceDir, process, launchedAt);
+            }
         });
+    }
+
+    /**
+     * Offers to report a genuine game crash (non-zero exit the player didn't ask for). A crash
+     * report file written to {@code crash-reports/} after launch is attached as technical detail
+     * when Forge/Fabric/vanilla produced one; the exit code alone is still reported without it.
+     */
+    private void promptGameCrashReport(ModpackSummary modpack, Path instanceDir, Process process, java.time.Instant launchedAt) {
+        int exitCode = process.exitValue();
+        if (exitCode == 0) {
+            return;
+        }
+        Path crashReportFile = findCrashReportSince(instanceDir, launchedAt);
+        String details = crashReportFile != null ? readCrashReport(crashReportFile) : ("Code de sortie : " + exitCode);
+        String summary = "Le jeu (" + modpack.name() + ") s'est arrêté de façon inattendue (code " + exitCode + ").";
+        SwingUtilities.invokeLater(() -> {
+            String description = CrashPromptDialog.ask(shellFrame, summary);
+            if (description != null) {
+                backgroundExecutor.execute(() -> bugReportApi.submit(
+                        BugReportType.GAME_CRASH, summary, description, details, modpack.slug()));
+            }
+        });
+    }
+
+    /** Most recently modified file under {@code instanceDir/crash-reports} written after {@code since}, or {@code null}. */
+    private Path findCrashReportSince(Path instanceDir, java.time.Instant since) {
+        Path crashReports = instanceDir.resolve("crash-reports");
+        if (!Files.isDirectory(crashReports)) {
+            return null;
+        }
+        try (java.util.stream.Stream<Path> stream = Files.list(crashReports)) {
+            return stream.filter(Files::isRegularFile)
+                    .filter(file -> isNewerThan(file, since))
+                    .max(java.util.Comparator.comparing(this::lastModifiedOrEpoch))
+                    .orElse(null);
+        } catch (java.io.IOException e) {
+            return null;
+        }
+    }
+
+    private boolean isNewerThan(Path file, java.time.Instant since) {
+        return lastModifiedOrEpoch(file).isAfter(since);
+    }
+
+    private java.time.Instant lastModifiedOrEpoch(Path file) {
+        try {
+            return Files.getLastModifiedTime(file).toInstant();
+        } catch (java.io.IOException e) {
+            return java.time.Instant.EPOCH;
+        }
+    }
+
+    /** Capped read - a crash report is normally a few KB of text, never worth risking a huge allocation over. */
+    private String readCrashReport(Path file) {
+        try {
+            byte[] bytes = Files.readAllBytes(file);
+            int cap = Math.min(bytes.length, 200_000);
+            return new String(bytes, 0, cap, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.io.IOException e) {
+            Log.warn(LauncherApp.class, "Could not read crash report " + file.getFileName() + ": " + e.getMessage());
+            return "Impossible de lire le rapport de crash.";
+        }
     }
 
     private String describeInstallStep(InstallStep step) {

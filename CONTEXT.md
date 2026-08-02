@@ -281,7 +281,8 @@ juste le "quoi".
 ```
 mc.snakenest.launcher            Main.java (composition root minimal) + LauncherApp.java (orchestration réelle)
 .config                          LauncherConfig (thème + playerId), ConfigStore
-.crypto                          Ed25519KeyPair, KeyStorage/EncryptedFileKeyStorage, SecureFilePermissions
+.crypto                          Ed25519KeyPair, KeyStorage/EncryptedFileKeyStorage, SecureFilePermissions,
+                                  PinProtection, SecretBox
 .net                              HttpJsonClient, JsonResponse, RawResponse, Uris
 .auth                            LauncherAuthApiClient, SignedRequestSigner/SignedParams, PlayerSession,
                                   PollResult, DeviceAuthState/Listener/Service, BrowserOpener
@@ -294,16 +295,21 @@ mc.snakenest.launcher            Main.java (composition root minimal) + Launcher
                                   fr.theshark34.openlauncherlib.*/fr.flowarg.openlauncherlib.*
 .news                             NewsApiClient, Post (Azuriom /api/posts, public, non signé)
 .util                              HumanSize (le reste — AppDirs, Hex, Sha256, AtomicFiles, Log — est dans `common`)
+.maintenance                      CleanupService — bouton "Nettoyer" (logs/crash-reports/caches, jamais mods/configs/mondes)
+.bugreport                         BugReportType/BugReportApiClient (POST /api/launcher-auth/bug-reports, best-effort),
+                                  CrashReportHandler/EdtExceptionHandler (exceptions non gérées, thread de fond + EDT)
 .ui                                LauncherFrame, Sidebar (plus de Twitch/Discord), TopBar, ContentArea, LogoPanel
                                   (placeholder = parchemin, plus "SN"), ThemeController, NavTarget, LoginFrame
                                   (premier écran, avant toute session, message de bienvenue)
 .ui.common                        Icons/VectorIcon (icônes dessinées en Java2D ; plus de twitch()/discord(), supprimées
                                   avec la fonctionnalité), IconButton, Buttons (flatIcon + iconButton), AvatarPanel
-                                  (auto-centré), RemoteImages, RoundedImageIcon (avatar rond dans un bouton/label)
+                                  (auto-centré), RemoteImages, RoundedImageIcon (avatar rond dans un bouton/label), Borders
 .ui.modpack                        ModpackSectionPage (CardLayout liste/détail), ModpackListPage, ModpackDetailPage
                                   (bouton Télécharger/Démarrer selon `installed`)
 .ui.news                          NewsSectionPage, NewsListPage, NewsDetailPage
-.ui.settings                      SettingsPage (thème, dossier données, logout)
+.ui.settings                      SettingsPage (thème, PIN, stockage assets + migration, nettoyage, signaler un bug, logout)
+.ui.pin                           PinUnlockDialog (gate au démarrage), PinSetupDialog (activer/désactiver)
+.ui.bugreport                      CrashPromptDialog (prompt crash launcher/jeu), ManualBugReportDialog ("Signaler un bug")
 .ui.account                        AccountPopover (username/role/email/avatar + logout — jamais de requête réseau
                                   au clic, tout est déjà en cache dans LauncherApp)
 .devpreview                        FullShellPreview — QA manuelle, données factices, à lancer depuis l'IDE
@@ -742,6 +748,120 @@ confirmant l'alignement visuel.
 Vérifié : `mvn clean test` vert sur les 3 modules, dump direct des bounds/
 tailles réelles pour les boutons de `AccountPopover`, rendu Xvfb de
 `ErrorPanel` (message + boutons Retour/Réessayer visibles et lisibles).
+
+### 1k. Session suivante : code PIN, partage des assets vanilla + migration, nettoyage, versionnage 2.0.0, rapports de bug/crash
+Plusieurs demandes traitées à la suite, branche `feat/versioning-pin-shared-assets` :
+- **Code PIN** (`crypto.PinProtection`/`SecretBox`, `ui.pin.*`, `PinReset`) —
+  chiffre la clé stockée (AES-256-GCM) avec une clé dérivée du PIN
+  (PBKDF2-HMAC-SHA256, 600k itérations) au lieu du fichier `wrap.key` en
+  clair ; demandé au démarrage si activé ; chiffre aussi les fichiers de
+  modpack listés dans un `.cryptlist` optionnel. "Code oublié ?" supprime
+  tout plutôt que de tenter une récupération (impossible par construction).
+  Voir `crypto/README.md` pour les limites honnêtes (protège contre un vol
+  du dossier, pas contre un attaquant qui force le PIN).
+- **Nettoyage** (`maintenance.CleanupService`) — bouton "Nettoyer" (logs,
+  crash-reports, caches), avec `preview()` pour afficher une taille réelle
+  avant confirmation.
+- **Migration du stockage des assets** (`game.assets.SharedAssetsLinker#migrate`)
+  — applique rétroactivement le mode choisi aux modpacks déjà installés
+  (dédup/hardlink ou re-séparation). A aussi corrigé un bug de sur-partage :
+  l'ancienne liste d'exclusion (`assets`, `natives`) laissait passer
+  `mods/`/`config/`/`saves/`, remplacée par une liste blanche
+  (`SHARED_LIBRARY_SUBDIRS = libraries, versions`).
+- **Bug corrigé (pas demandé, trouvé en testant)** : le launcher quittait
+  silencieusement (exit 0) juste après un login réussi -
+  `LoginFrame.onSucceeded` se fermait avant que le thread de fond ait fini
+  de récupérer les infos joueur, et AWT arrête l'EDT (donc la JVM) dès qu'il
+  n'y a plus aucune fenêtre affichable. `LoginFrame` ne se ferme plus
+  elle-même ; c'est `LauncherApp.showShell()` qui la ferme, une fois la
+  fenêtre de remplacement réellement affichée.
+- **Bug corrigé** : bordures qui réapparaissaient au changement de thème sur
+  certains composants - `setBorder(null)` ne survit pas à
+  `updateComponentTreeUI` (FlatLaf réinstalle une bordure sur tout ce qui a
+  une bordure `null` ou `UIResource`). Remplacé par `ui.common.Borders.none()`
+  (une vraie `EmptyBorder`, ni l'un ni l'autre).
+- **Versionnage 2.0.0** — voir `VERSIONING.md` : chaque module (`common`,
+  `bootstrap`, `launcher`) a sa propre version indépendante dans son pom,
+  majeur seulement sur demande explicite, le launcher connaît sa version via
+  `util.AppVersion` (filtré depuis `version.properties` par Maven).
+- **Rapports de bug/crash** (`bugreport.*` + `ui.bugreport.*` côté launcher,
+  `BugReport`/`BugReportController` (API + admin) côté site) — capture les
+  exceptions non gérées (thread de fond via
+  `Thread.setDefaultUncaughtExceptionHandler` ; EDT via une `EventQueue`
+  personnalisée poussée sur `Toolkit.getSystemEventQueue()`, qui enveloppe
+  `dispatchEvent()` dans un try/catch - **pas** la propriété système
+  `sun.awt.exception.handler`, dont le mécanisme est mort depuis longtemps
+  dans les JDK modernes malgré la doc qui traîne encore dessus : vérifié
+  directement contre le JDK 21 du projet, la chaîne n'existe même plus dans
+  `EventDispatchThread.class`, et une reproduction minimale confirme qu'elle
+  ne fait strictement rien - piège trouvé après un premier "ça devrait
+  marcher" non testé, cf. `bugreport.CrashReportHandler`), détecte un vrai
+  crash du jeu (code de sortie non nul **et** pas causé par le bouton
+  Arrêter/Tuer - réutilise `Activity.STOPPING` plutôt qu'un champ dédié) et
+  propose un "Signaler un bug" manuel depuis Paramètres. Jamais envoyé sans
+  confirmation explicite du joueur. Nouvelle page admin "Rapports de bug"
+  côté site (`launcher-auth.admin.bug-reports.*`), endpoint documenté dans
+  `LAUNCHER_INTEGRATION.md` section 9.
+- **Autorisation des rapports par client + crashs serveur** (demandé avant la
+  mise en prod) — nouvelle case "Autoriser les rapports de bug"
+  (`bug_reports_enabled`, activée par défaut) sur chaque client dans l'admin :
+  décochée, toute soumission de ce client est rejetée en `403`. Nouveau type
+  `server_crash` permettant à un **serveur Minecraft** de signaler ses propres
+  plantages - contrairement aux trois types launcher (non signés, car un crash
+  peut survenir avant tout login), celui-ci est **authentifié** par le couple
+  `client_id` + `Authorization: Bearer <server_token>`, exactement comme
+  `/internal/pubkey` : un serveur a un secret durable, et "le serveur a
+  planté" est typiquement un rapport qu'on voudrait falsifier pour tromper un
+  admin. Le type doit correspondre au type de client (`403` sinon).
+  **Ordre des contrôles volontaire** : authentification **avant**
+  `bug_reports_enabled`, sinon un appelant non authentifié pourrait distinguer
+  un client désactivé (`403`) d'un client dont il n'a pas le token (`401`).
+  `/api/launcher-auth/client` renvoie aussi le drapeau pour que le launcher
+  masque son bouton plutôt que d'en proposer un qui échouerait (champ absent =
+  activé, pour rester compatible avec un site plus ancien).
+- **Watchdogs anti-boucle et anti-gel** (`bugreport.CrashLoopWatchdog` +
+  `bugreport.EdtHeartbeatMonitor`/`EdtFreezeWatchdog`, demandé explicitement,
+  seuils ajustés sur demande explicite ensuite) — deux détecteurs
+  indépendants partagent la même séquence de fermeture
+  (`CrashReportHandler.beginShutdown`) :
+  - **boucle d'exceptions** : plus de 100 exceptions en moins de 5s (seuil
+    relevé depuis 5 en 2s, sur demande explicite - "plus réactif").
+  - **EDT gelé** : aucun battement (`SwingUtilities.invokeLater` posté
+    toutes les secondes) reçu depuis plus de 20s - détecte ce que les
+    exceptions ne peuvent pas voir (deadlock, boucle infinie dans un
+    paint/listener, verrou jamais relâché - rien ne lève d'exception dans
+    ces cas). Utilise la pile de la file d'événements figée
+    (`Thread#getStackTrace()`, inspectable depuis un autre thread même
+    pendant que l'EDT est bloqué) comme diagnostic.
+
+  Dans les deux cas : ferme de force la boîte de dialogue actuellement
+  affichée s'il y en a une (`ui.bugreport.CrashPromptDialog#closeActiveDialog`
+  - a nécessité de passer `CrashPromptDialog` de `JOptionPane.showConfirmDialog`
+  à `createDialog` pour pouvoir garder une référence au `JDialog` et le
+  fermer depuis l'extérieur), journalise le diagnostic complet localement
+  tout de suite (pas seulement si le joueur accepte de l'envoyer - trop
+  précieux pour risquer de le perdre si la boîte suivante n'est jamais
+  répondue), propose une dernière boîte "le launcher doit se fermer", puis
+  quitte (`System.exit`). La fermeture ne dépend pas de cette boîte : un
+  minuteur de secours force `System.exit` 15s plus tard même si personne ne
+  répond - un watchdog qui ne termine le process que si quelqu'un clique un
+  bouton n'en est pas vraiment un si le problème est assez grave pour aussi
+  bloquer l'interface.
+
+  Vérifié en conditions réelles (pas juste par test unitaire), sans jamais
+  répondre à aucune boîte de dialogue, pour les deux :
+  - boucle : thread de fond qui martèle
+    `SwingUtilities.invokeLater(() -> { throw ...; })` → `System.exit`
+    forcé dans la fenêtre du minuteur de secours. Piège de méthodologie
+    noté au passage : un `javax.swing.Timer` répétitif ne convient **pas**
+    pour simuler une boucle de crash - son état interne reste bloqué dès la
+    première exception du listener et il ne se reprogramme plus jamais ;
+    un thread qui poste directement des `invokeLater` n'a pas ce problème.
+  - gel : un seul `SwingUtilities.invokeLater(() -> Thread.sleep(120_000))`
+    (blocage réel de l'EDT, aucune exception) détecté sous 20s, pile
+    capturée et journalisée localement, process fermé de force par le
+    minuteur de secours ~15s plus tard - ~37s au total du gel à la
+    fermeture, cohérent avec les deux seuils additionnés.
 
 ### Bug CSS répété "le logo prend la moitié de la page" (déjà corrigé, à ne pas réintroduire)
 Cause racine : la règle globale d'Azuriom `img { max-width: 100%; height:
