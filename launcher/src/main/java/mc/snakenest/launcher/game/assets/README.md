@@ -35,10 +35,10 @@ tree walk handles each (`util.AppDirs#sharedAssetsPool`/
 - assets — mirrors the instance's `assets/`. Mojang already names these
   files by their own hash (`objects/xx/xxxx...`), so this is naturally
   collision-free across every Minecraft version.
-- libraries — mirrors `libraries/` plus the client jar under `versions/`,
-  whose paths already encode group/artifact/version, and **nothing else**.
-  `natives/` is never shared (extracted per-instance, platform-specific,
-  small).
+- libraries — mirrors `libraries/`, whose paths already encode
+  group/artifact/version, and **nothing else**. `natives/` is never shared
+  (extracted per-instance, platform-specific, small), and neither is
+  `versions/` — see "The `versions/` mistake" below.
 
   That "nothing else" is an **allow-list** (`SHARED_LIBRARY_SUBDIRS`), and
   it matters: it began as a deny-list (`assets`, `natives`) applied while
@@ -50,6 +50,39 @@ tree walk handles each (`util.AppDirs#sharedAssetsPool`/
   test (`neverSharesModsConfigsOrWorldsBetweenModpacks`). An allow-list
   makes that whole class of mistake impossible by construction instead of
   depending on someone remembering to extend an exclusion list.
+
+### The `versions/` mistake
+
+`versions/` used to be in that allow-list, on the reasoning that it holds
+the vanilla client jar. Both halves of that turned out to be wrong, and the
+result was worse than the deny-list bug above.
+
+This launcher doesn't lay instances out the way vanilla does: it runs
+`client.jar` from the instance root with the version JSONs beside it, and
+never reads `versions/` at all. Checked on a real instance — `client.jar`
+and `versions/1.21.11/1.21.11.jar` were byte-identical, and only the former
+is what actually launches. So sharing it bought nothing.
+
+What it cost: with `OFFICIAL_MINECRAFT` the pool is the player's real
+`.minecraft`, and *its* `versions/` — under TLauncher especially — is one
+**complete game installation per profile**, each with its own `mods/`,
+`config/`, `options.txt` and `saves/`. Linking that subtree wholesale
+dragged every profile the player owned into every modpack instance: on the
+instance that surfaced this, 69 foreign profiles and **48 `level.dat`
+files**. That's the same world-corruption risk the allow-list exists to
+prevent, reintroduced one directory deeper where a top-level allow-list
+couldn't see it.
+
+Migration removes those links by **deleting** them, not by privatising
+them (`removeLegacyVersionLinks`). That distinction is the whole point:
+`repairWronglySharedFiles` gives a wrongly-shared file its own copy, which
+applied here would have written gigabytes of somebody else's profiles into
+the instance for real — turning a phantom size into an actual one, the
+exact opposite of what "Migrer" is for. Deleting a hardlink only drops that
+one name; the original under `.minecraft` keeps its own and is untouched.
+Both properties are pinned by tests
+(`migrateUnlinksForeignGameInstallationsFromVersionsWithoutCopyingThem`,
+`migratingVersionsMustNotTurnHardlinksIntoRealCopies`).
 
 **`migrate`** is what the "Migrer les modpacks déjà installés" button
 calls, and it's what makes the setting mean anything for packs that are

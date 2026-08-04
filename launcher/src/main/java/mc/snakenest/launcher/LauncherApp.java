@@ -434,7 +434,7 @@ final class LauncherApp {
         }
 
         backgroundExecutor.execute(() -> {
-            SharedAssetsLinker.MigrationResult total = new SharedAssetsLinker.MigrationResult(0, 0, 0, 0, false);
+            SharedAssetsLinker.MigrationResult total = new SharedAssetsLinker.MigrationResult(0, 0, 0, 0, false, 0);
             for (Path instanceDir : instanceDirectories()) {
                 SharedAssetsLinker.MigrationResult one = assetsLinker.migrate(instanceDir, mode);
                 total = new SharedAssetsLinker.MigrationResult(
@@ -442,7 +442,8 @@ final class LauncherApp {
                         total.deduplicated() + one.deduplicated(),
                         total.privatised() + one.privatised(),
                         total.bytesReclaimed() + one.bytesReclaimed(),
-                        total.hardlinksFailed() || one.hardlinksFailed());
+                        total.hardlinksFailed() || one.hardlinksFailed(),
+                        total.unlinked() + one.unlinked());
             }
             SharedAssetsLinker.MigrationResult result = total;
             SwingUtilities.invokeLater(() -> showMigrationResult(parent, mode, result));
@@ -468,6 +469,16 @@ final class LauncherApp {
             message.append(result.pooled()).append(" fichier(s) déplacés vers le stockage partagé,\n")
                     .append(result.deduplicated()).append(" doublon(s) remplacés par des liens,\n")
                     .append(HumanSize.format(result.bytesReclaimed())).append(" récupérés.");
+        }
+
+        // Worth stating separately rather than folding into the counts above: these files weren't
+        // this modpack's at all (other Minecraft profiles pulled in by an older build - see
+        // SharedAssetsLinker.LEGACY_SHARED_SUBDIR), and a player seeing their instance shrink by
+        // thousands of files deserves to know nothing of theirs was thrown away.
+        if (result.unlinked() > 0) {
+            message.append("\n\n").append(result.unlinked())
+                    .append(" fichier(s) appartenant à d'autres installations Minecraft ont été retirés du modpack.\n")
+                    .append("Tes autres profils (.minecraft) ne sont pas touchés : seul le lien depuis le modpack a été supprimé.");
         }
 
         if (result.hardlinksFailed()) {

@@ -33,10 +33,11 @@ import java.util.stream.Stream;
  * <p>Two pools, mirroring FlowUpdater's own relative-path layout so a straight tree walk works for
  * both: an assets pool (mirrors the instance's {@code assets/} folder - Mojang's own
  * content-addressed {@code objects/xx/xxxx...} naming means this is naturally collision-free across
- * every Minecraft version) and a libraries pool (mirrors {@code libraries/} plus the vanilla client
- * jar under {@code versions/} - and <b>nothing else</b>, see {@link #SHARED_LIBRARY_SUBDIRS} for why
- * that's an allow-list rather than "everything except assets and natives"). {@code natives/} is
- * never shared: extracted per-instance, platform-specific, and small.
+ * every Minecraft version) and a libraries pool (mirrors {@code libraries/} and <b>nothing else</b>,
+ * see {@link #SHARED_LIBRARY_SUBDIRS} for why that's an allow-list rather than "everything except
+ * assets and natives", and {@link #LEGACY_SHARED_SUBDIR} for why {@code versions/} used to be in it
+ * and no longer is). {@code natives/} is never shared: extracted per-instance, platform-specific,
+ * and small.
  *
  * <p>Never used for {@link AssetStorageMode#PER_MODPACK} - {@link #preSeed}/{@link #absorb} are
  * no-ops in that case, leaving the fully-independent-per-instance behavior untouched;
@@ -62,7 +63,32 @@ public final class SharedAssetsLinker {
      * allow-list makes that class of mistake impossible by construction rather than by remembering
      * to extend a list of exclusions.
      */
-    private static final List<String> SHARED_LIBRARY_SUBDIRS = List.of("libraries", "versions");
+    private static final List<String> SHARED_LIBRARY_SUBDIRS = List.of("libraries");
+
+    /**
+     * Shared by earlier builds, deliberately no longer shared - and actively un-shared by
+     * {@link #migrate}. Kept as a named constant precisely because dropping it from
+     * {@link #SHARED_LIBRARY_SUBDIRS} isn't enough on its own: instances installed by those builds
+     * are still full of the links it created.
+     *
+     * <p>The reasoning it was originally included on - "{@code versions/} holds the vanilla client
+     * jar, which is a vanilla resource like any other" - holds for a launcher that lays instances
+     * out the way vanilla does. Ours doesn't: it runs {@code client.jar} from the instance root
+     * with the version JSONs beside it, and never reads {@code versions/} at all. Verified on a
+     * real instance: {@code client.jar} and {@code versions/1.21.11/1.21.11.jar} were
+     * byte-identical, and only the former is what gets launched.
+     *
+     * <p>So sharing it bought nothing, and cost far more than a redundant jar. Under
+     * {@link AssetStorageMode#OFFICIAL_MINECRAFT} the pool is the player's real {@code .minecraft},
+     * whose {@code versions/} - with TLauncher especially - holds one <b>complete game installation
+     * per profile</b>: {@code mods/}, {@code config/}, {@code options.txt}, {@code saves/}. Linking
+     * that subtree wholesale dragged every one of those profiles into every modpack instance,
+     * worlds included (48 {@code level.dat} files on the instance that surfaced this). That is
+     * precisely the corruption risk {@link #SHARED_LIBRARY_SUBDIRS} exists to prevent - an in-place
+     * write to a linked world file rewrites the player's real one - reintroduced one directory
+     * deeper, where a top-level allow-list couldn't see it.
+     */
+    private static final String LEGACY_SHARED_SUBDIR = "versions";
 
     private final AppDirs dirs;
 
@@ -119,10 +145,17 @@ public final class SharedAssetsLinker {
     }
 
     /** What one {@link #migrate} pass actually did, so the caller can report something concrete instead of "done". */
-    public record MigrationResult(int pooled, int deduplicated, int privatised, long bytesReclaimed, boolean hardlinksFailed) {
+    /**
+     * @param unlinked files removed from the instance because they were links to somebody else's
+     *                 game installation rather than this modpack's own - counted separately from
+     *                 {@code privatised} because nothing was copied and no disk space changed
+     *                 hands, see {@link #removeLegacyVersionLinks}
+     */
+    public record MigrationResult(int pooled, int deduplicated, int privatised, long bytesReclaimed,
+                                  boolean hardlinksFailed, int unlinked) {
 
         static MigrationResult empty() {
-            return new MigrationResult(0, 0, 0, 0, false);
+            return new MigrationResult(0, 0, 0, 0, false, 0);
         }
 
         MigrationResult plus(MigrationResult other) {
@@ -131,7 +164,8 @@ public final class SharedAssetsLinker {
                     deduplicated + other.deduplicated,
                     privatised + other.privatised,
                     bytesReclaimed + other.bytesReclaimed,
-                    hardlinksFailed || other.hardlinksFailed);
+                    hardlinksFailed || other.hardlinksFailed,
+                    unlinked + other.unlinked);
         }
     }
 
@@ -162,7 +196,8 @@ public final class SharedAssetsLinker {
             }
             result = result.plus(privatiseTree(instanceDir.resolve("assets"), dirs.sharedAssetsPool()))
                     .plus(privatiseTree(instanceDir.resolve("assets"), officialMinecraftFolder().resolve("assets")));
-            return result.plus(repairWronglySharedFiles(instanceDir));
+            return result.plus(repairWronglySharedFiles(instanceDir))
+                    .plus(removeLegacyVersionLinks(instanceDir));
         }
 
         Path assetsPool = assetsPoolFor(mode);
@@ -171,7 +206,8 @@ public final class SharedAssetsLinker {
         for (String subdir : SHARED_LIBRARY_SUBDIRS) {
             result = result.plus(migrateTree(instanceDir.resolve(subdir), librariesPool.resolve(subdir)));
         }
-        return result.plus(repairWronglySharedFiles(instanceDir));
+        return result.plus(repairWronglySharedFiles(instanceDir))
+                .plus(removeLegacyVersionLinks(instanceDir));
     }
 
     /**
@@ -194,6 +230,13 @@ public final class SharedAssetsLinker {
                 if (SHARED_LIBRARY_SUBDIRS.contains(topLevel) || "assets".equals(topLevel) || "natives".equals(topLevel)) {
                     continue;
                 }
+                // versions/ is handled by removeLegacyVersionLinks instead: those files belong to
+                // the pool, not to this instance, so giving them a private copy here would turn a
+                // phantom 13 GB of hardlinks into 13 GB genuinely written to disk - the exact
+                // opposite of what a player clicking "Migrer" is asking for.
+                if (LEGACY_SHARED_SUBDIR.equals(topLevel)) {
+                    continue;
+                }
                 if (privatise(file, pool.resolve(relative))) {
                     Log.warn(SharedAssetsLinker.class, "Un-shared " + relative
                             + ": it should never have been pooled (fixed by the allow-list, see SHARED_LIBRARY_SUBDIRS)");
@@ -201,7 +244,74 @@ public final class SharedAssetsLinker {
                 }
             }
         }
-        return new MigrationResult(0, 0, privatised, 0, false);
+        return new MigrationResult(0, 0, privatised, 0, false, 0);
+    }
+
+    /**
+     * Deletes the instance's {@code versions/} entries that are hardlinks into a pool - see
+     * {@link #LEGACY_SHARED_SUBDIR} for how they got there and why they shouldn't be.
+     *
+     * <p><b>Deleted, not privatised.</b> These files were never this instance's to begin with: they
+     * are the player's other game installations, dragged in by an earlier build. Deleting a hardlink
+     * only drops <em>this</em> name for the data - the original under {@code .minecraft} keeps its
+     * own link and is left completely untouched, which is what makes this safe to do to somebody
+     * else's Minecraft profiles.
+     *
+     * <p>Files under {@code versions/} that are <em>not</em> shared are left alone: whatever wrote
+     * them, it wasn't the pre-seeding, so they aren't ours to remove.
+     */
+    private MigrationResult removeLegacyVersionLinks(Path instanceDir) {
+        Path versionsDir = instanceDir.resolve(LEGACY_SHARED_SUBDIR);
+        if (!Files.isDirectory(versionsDir)) {
+            return MigrationResult.empty();
+        }
+
+        int unlinked = 0;
+        for (Path pool : List.of(dirs.sharedLibrariesPool(), officialMinecraftFolder())) {
+            if (!Files.isDirectory(pool)) {
+                continue;
+            }
+            for (Path file : filesUnder(versionsDir)) {
+                Path poolFile = pool.resolve(instanceDir.relativize(file));
+                try {
+                    if (!Files.exists(poolFile) || !Files.isSameFile(file, poolFile)) {
+                        continue;
+                    }
+                    Files.delete(file);
+                    unlinked++;
+                } catch (IOException e) {
+                    Log.warn(SharedAssetsLinker.class, "Could not un-link " + file.getFileName() + ": " + e.getMessage());
+                }
+            }
+        }
+
+        if (unlinked > 0) {
+            Log.info(SharedAssetsLinker.class, "Removed " + unlinked
+                    + " file(s) wrongly linked under " + LEGACY_SHARED_SUBDIR + "/ from the shared pool"
+                    + " (originals untouched - see LEGACY_SHARED_SUBDIR)");
+            deleteEmptyDirectories(versionsDir);
+        }
+        return new MigrationResult(0, 0, 0, 0, false, unlinked);
+    }
+
+    /** Deepest-first, so a parent is only attempted once its children are gone. Never removes {@code root} itself. */
+    private void deleteEmptyDirectories(Path root) {
+        List<Path> directories;
+        try (Stream<Path> stream = Files.walk(root)) {
+            directories = stream.filter(Files::isDirectory)
+                    .filter(path -> !path.equals(root))
+                    .sorted(java.util.Comparator.comparingInt(Path::getNameCount).reversed())
+                    .toList();
+        } catch (IOException e) {
+            return;
+        }
+        for (Path directory : directories) {
+            try {
+                Files.delete(directory);
+            } catch (IOException e) {
+                // Not empty (something legitimately lives there), or already gone - both fine.
+            }
+        }
     }
 
     private Path assetsPoolFor(AssetStorageMode mode) {
@@ -357,10 +467,10 @@ public final class SharedAssetsLinker {
             } catch (IOException | UnsupportedOperationException e) {
                 Log.warn(SharedAssetsLinker.class, "Could not migrate " + sourceRoot.relativize(sourceFile)
                         + " into " + poolRoot + ": " + e.getMessage());
-                return new MigrationResult(pooled, deduplicated, 0, reclaimed, true);
+                return new MigrationResult(pooled, deduplicated, 0, reclaimed, true, 0);
             }
         }
-        return new MigrationResult(pooled, deduplicated, 0, reclaimed, false);
+        return new MigrationResult(pooled, deduplicated, 0, reclaimed, false, 0);
     }
 
     /**
@@ -380,7 +490,7 @@ public final class SharedAssetsLinker {
                 privatised++;
             }
         }
-        return new MigrationResult(0, 0, privatised, 0, false);
+        return new MigrationResult(0, 0, privatised, 0, false, 0);
     }
 
     /**

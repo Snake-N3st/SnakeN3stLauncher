@@ -38,7 +38,7 @@ class SharedAssetsLinkerTest {
     }
 
     @Test
-    void preSeedHardlinksPooledLibrariesAndTheClientJarIntoTheInstance(@TempDir Path root) throws IOException {
+    void preSeedHardlinksPooledLibrariesButNeverVersions(@TempDir Path root) throws IOException {
         AppDirs dirs = new AppDirs(root);
         SharedAssetsLinker linker = new SharedAssetsLinker(dirs);
         Path instanceDir = dirs.instance("aventure-ultime");
@@ -54,7 +54,80 @@ class SharedAssetsLinkerTest {
 
         // Mirrored at the same relative paths FlowUpdater itself writes into the instance.
         assertTrue(isSameFile(pooledLibrary, instanceDir.resolve("libraries").resolve("com").resolve("example").resolve("lib.jar")));
-        assertTrue(isSameFile(pooledClientJar, instanceDir.resolve("versions").resolve("1.20.1").resolve("1.20.1.jar")));
+
+        // versions/ is deliberately NOT pre-seeded any more: this launcher runs client.jar from the
+        // instance root and never reads versions/, while the pool's versions/ - when the pool is the
+        // player's real .minecraft - is a pile of complete third-party game installations, worlds
+        // included. See SharedAssetsLinker.LEGACY_SHARED_SUBDIR.
+        assertFalse(Files.exists(instanceDir.resolve("versions").resolve("1.20.1").resolve("1.20.1.jar")));
+    }
+
+    @Test
+    void migrateUnlinksForeignGameInstallationsFromVersionsWithoutCopyingThem(@TempDir Path root) throws IOException {
+        // Reproduces exactly what an earlier build did with AssetStorageMode.OFFICIAL_MINECRAFT:
+        // the pool was the player's real .minecraft, whose versions/ holds one whole game
+        // installation per TLauncher profile - so every profile, worlds and all, got hardlinked
+        // into every modpack instance.
+        AppDirs dirs = new AppDirs(root);
+        SharedAssetsLinker linker = new SharedAssetsLinker(dirs);
+
+        Path pool = dirs.sharedLibrariesPool();
+        Path foreignWorld = pool.resolve("versions").resolve("Koh Lanta").resolve("saves").resolve("maison").resolve("level.dat");
+        Path foreignJar = pool.resolve("versions").resolve("Koh Lanta").resolve("Koh Lanta.jar");
+        Path pooledLibrary = pool.resolve("libraries").resolve("com").resolve("lib.jar");
+        writeFile(foreignWorld, "someone-elses-world");
+        writeFile(foreignJar, "someone-elses-jar");
+        writeFile(pooledLibrary, "a-real-shared-library");
+
+        Path instance = dirs.instance("pack-a");
+        Path linkedWorld = instance.resolve("versions").resolve("Koh Lanta").resolve("saves").resolve("maison").resolve("level.dat");
+        Path linkedJar = instance.resolve("versions").resolve("Koh Lanta").resolve("Koh Lanta.jar");
+        Path linkedLibrary = instance.resolve("libraries").resolve("com").resolve("lib.jar");
+        Files.createDirectories(linkedWorld.getParent());
+        Files.createDirectories(linkedLibrary.getParent());
+        Files.createLink(linkedWorld, foreignWorld);
+        Files.createLink(linkedJar, foreignJar);
+        Files.createLink(linkedLibrary, pooledLibrary);
+
+        SharedAssetsLinker.MigrationResult result = linker.migrate(instance, AssetStorageMode.LAUNCHER_SHARED);
+
+        // Gone from the modpack...
+        assertFalse(Files.exists(linkedWorld), "another profile's world has no business in this modpack");
+        assertFalse(Files.exists(linkedJar), "another profile's jar has no business in this modpack");
+        assertEquals(2, result.unlinked());
+
+        // ...but emphatically NOT deleted from the player's actual Minecraft installation. Removing
+        // a hardlink only drops that one name for the data.
+        assertTrue(Files.exists(foreignWorld), "the player's real world must survive untouched");
+        assertEquals("someone-elses-world", Files.readString(foreignWorld));
+
+        // And the genuinely shareable file is still shared - un-linking versions/ must not turn
+        // into "stop sharing anything".
+        assertTrue(isSameFile(pooledLibrary, linkedLibrary));
+    }
+
+    @Test
+    void migratingVersionsMustNotTurnHardlinksIntoRealCopies(@TempDir Path root) throws IOException {
+        // The trap this fix had to avoid: repairWronglySharedFiles gives wrongly-shared files a
+        // private copy. Applied to versions/, that would have rewritten gigabytes of other people's
+        // profiles into the instance for real - turning a phantom size into an actual one, which is
+        // the exact opposite of what clicking "Migrer" is meant to do.
+        AppDirs dirs = new AppDirs(root);
+        SharedAssetsLinker linker = new SharedAssetsLinker(dirs);
+
+        Path pooledProfileFile = dirs.sharedLibrariesPool().resolve("versions").resolve("Bedwars").resolve("Bedwars.jar");
+        writeFile(pooledProfileFile, "x".repeat(4096));
+
+        Path instance = dirs.instance("pack-a");
+        Path linked = instance.resolve("versions").resolve("Bedwars").resolve("Bedwars.jar");
+        Files.createDirectories(linked.getParent());
+        Files.createLink(linked, pooledProfileFile);
+
+        linker.migrate(instance, AssetStorageMode.LAUNCHER_SHARED);
+
+        assertFalse(Files.exists(linked), "must be unlinked, not copied");
+        assertEquals(1, Files.getAttribute(pooledProfileFile, "unix:nlink"),
+                "the pool copy should be back down to a single link, i.e. nothing was duplicated");
     }
 
     @Test
