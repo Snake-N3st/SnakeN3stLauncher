@@ -2,6 +2,7 @@ package mc.snakenest.launcher.net;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import mc.snakenest.launcher.util.AppVersion;
 import mc.snakenest.launcher.util.Log;
 
 import java.io.IOException;
@@ -24,6 +25,8 @@ import java.time.Duration;
 public final class HttpJsonClient {
 
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
+    private static final String USER_AGENT = "SnakeN3stLauncher/" + AppVersion.current()
+            + " (+https://snake-n3st.fr)";
 
     private final HttpClient httpClient;
     private final Gson gson;
@@ -58,6 +61,7 @@ public final class HttpJsonClient {
     public RawResponse getRaw(URI uri) throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder(uri)
                 .timeout(REQUEST_TIMEOUT)
+                .header("User-Agent", USER_AGENT)
                 .GET()
                 .build();
         Log.info(HttpJsonClient.class, "GET (raw) " + uri.getPath());
@@ -68,7 +72,8 @@ public final class HttpJsonClient {
     private HttpRequest.Builder requestBuilder(URI uri) {
         return HttpRequest.newBuilder(uri)
                 .timeout(REQUEST_TIMEOUT)
-                .header("Accept", "application/json");
+                .header("Accept", "application/json")
+                .header("User-Agent", USER_AGENT);
     }
 
     private JsonResponse sendForJson(HttpRequest request) throws IOException, InterruptedException {

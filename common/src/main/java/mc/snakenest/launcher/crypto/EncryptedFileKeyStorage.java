@@ -22,8 +22,10 @@ import java.util.Optional;
  *   permission-restricted via {@link SecureFilePermissions}. Convenient (nothing to type at
  *   startup) but, by construction, anything able to read one file can read the other.
  *   <li><b>PIN</b> ({@link #withPin}) - the key is derived from the player's PIN instead
- *   ({@link PinProtection}) and {@code wrap.key} is deleted, so no key material is left on disk
- *   at all. See {@link PinProtection}'s Javadoc for the honest limits of that.
+ *   ({@code launcher.crypto.PinProtection}, a different module, not linkable from here) and
+ *   {@code wrap.key} is deleted, so no key material is left on disk at all. Only ever used from
+ *   {@code launcher} - {@code bootstrap} never prompts for a PIN, staying minimal (a PIN-protected
+ *   vault just reads as "no usable key" to it).
  * </ul>
  *
  * See {@link SecureFilePermissions}'s Javadoc for what the permission tightening does and doesn't
@@ -43,7 +45,7 @@ public final class EncryptedFileKeyStorage implements KeyStorage {
         this(dirs, null);
     }
 
-    /** @param pinKey already derived from the player's PIN by {@link PinProtection} - never the PIN itself */
+    /** @param pinKey already derived from the player's PIN by {@code launcher.crypto.PinProtection} - never the PIN itself */
     public static EncryptedFileKeyStorage withPin(AppDirs dirs, SecretKey pinKey) {
         return new EncryptedFileKeyStorage(dirs, pinKey);
     }

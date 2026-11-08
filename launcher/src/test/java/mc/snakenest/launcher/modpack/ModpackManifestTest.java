@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class ModpackManifestTest {
 
     private static ModpackManifest manifestWithRawMemory(Integer rawDefaultMemoryMb) {
-        return new ModpackManifest("1.0.0", null, 0, "1.20.4", "vanilla", null, List.of(), null, rawDefaultMemoryMb);
+        return new ModpackManifest("1.0.0", null, null, 0, "1.20.4", "vanilla", null, List.of(), null, rawDefaultMemoryMb);
     }
 
     @Test

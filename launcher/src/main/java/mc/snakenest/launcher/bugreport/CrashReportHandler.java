@@ -2,13 +2,12 @@ package mc.snakenest.launcher.bugreport;
 
 import mc.snakenest.launcher.ui.bugreport.CrashPromptDialog;
 import mc.snakenest.launcher.util.Log;
+import mc.snakenest.launcher.util.Throwables;
 
 import javax.swing.SwingUtilities;
 import java.awt.AWTEvent;
 import java.awt.EventQueue;
 import java.awt.Toolkit;
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -102,7 +101,7 @@ public final class CrashReportHandler {
             return;
         }
 
-        String stackTrace = stackTraceOf(ex);
+        String stackTrace = Throwables.stackTraceOf(ex);
         String summary = ex.getClass().getSimpleName() + (ex.getMessage() != null ? ": " + ex.getMessage() : "");
 
         // main() runs off the EDT, and an early startup crash could fire before any window
@@ -120,7 +119,7 @@ public final class CrashReportHandler {
     private static void handleLoop(BugReportApiClient api, Throwable lastException) {
         String summary = "Le launcher enchaîne trop d'erreurs et doit se fermer (dernière : "
                 + lastException.getClass().getSimpleName() + ").";
-        beginShutdown(api, summary, stackTraceOf(lastException));
+        beginShutdown(api, summary, Throwables.stackTraceOf(lastException));
     }
 
     private static void handleFreeze(BugReportApiClient api, Thread frozenEdtThread) {
@@ -203,12 +202,6 @@ public final class CrashReportHandler {
                 "bug-report-submit");
         reporter.setDaemon(true);
         reporter.start();
-    }
-
-    private static String stackTraceOf(Throwable ex) {
-        StringWriter writer = new StringWriter();
-        ex.printStackTrace(new PrintWriter(writer));
-        return writer.toString();
     }
 
     private static String stackTraceOf(Thread thread) {

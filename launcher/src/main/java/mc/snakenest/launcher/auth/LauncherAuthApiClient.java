@@ -6,6 +6,7 @@ import mc.snakenest.launcher.net.Uris;
 
 import java.io.IOException;
 import java.net.URI;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -39,6 +40,16 @@ public final class LauncherAuthApiClient {
 
     public URI loginUrl(String challengeToken) {
         return Uris.withQuery(baseUrl.resolve("/launcher-login"), Map.of("challenge", challengeToken));
+    }
+
+    /** Unsigned - a channel's name/restriction/default status isn't sensitive, see ChannelInfo's own docblock. */
+    public List<ChannelInfo> fetchChannels() throws IOException, InterruptedException, LauncherApiException {
+        JsonResponse response = http.get(baseUrl.resolve("/api/launcher-auth/channels"));
+
+        if (!response.isSuccess()) {
+            throw new LauncherApiException("Unexpected status fetching channels: " + response.statusCode(), response.statusCode());
+        }
+        return response.as(ChannelsResponse.class).channels();
     }
 
     /** Unsigned - there's no player key yet at this point (used to brand the login window). */
@@ -118,5 +129,8 @@ public final class LauncherAuthApiClient {
     }
 
     private record UsernameResponse(String username) {
+    }
+
+    private record ChannelsResponse(List<ChannelInfo> channels) {
     }
 }

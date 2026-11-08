@@ -45,9 +45,14 @@ public final class ModpackDetailPage extends JPanel {
     private enum ButtonState { IDLE, BUSY, RUNNING, STOPPING }
 
     private final JButton demarrerButton;
+    private JButton manageModsButton;
+    private final JButton offlineButton = new JButton("Mode hors connexion");
+    private Runnable onOffline;
     private final JLabel statusLabel = new JLabel(" ");
     private final JProgressBar progressBar = new JProgressBar(0, 100);
     private final String slug;
+    private boolean localOnly;
+    private final JLabel availabilityLabel = new JLabel();
     private boolean installed;
     private boolean updateAvailable;
     private ButtonState buttonState = ButtonState.IDLE;
@@ -82,6 +87,7 @@ public final class ModpackDetailPage extends JPanel {
 
         headerText.add(javax.swing.Box.createVerticalGlue());
         headerText.add(nameLabel);
+        headerText.add(availabilityLabel);
         headerText.add(new JLabel(viewModel.fileCount() + " fichiers"));
         headerText.add(new JLabel(sizeLabelText(viewModel)));
         headerText.add(javax.swing.Box.createVerticalGlue());
@@ -117,15 +123,24 @@ public final class ModpackDetailPage extends JPanel {
     }
 
     private JPanel buildFooter(ModpackDetailViewModel viewModel) {
-        JPanel footer = new JPanel();
+        JPanel footer = new JPanel(new BorderLayout(0, 8));
         footer.setOpaque(false);
-        footer.setLayout(new BoxLayout(footer, BoxLayout.Y_AXIS));
 
         progressBar.setVisible(false);
         statusLabel.setVisible(false);
-        footer.add(statusLabel);
-        footer.add(progressBar);
-        footer.add(javax.swing.Box.createVerticalStrut(8));
+        // A plain BoxLayout.Y_AXIS panel here used to leave the status label/progress bar
+        // centered (or off to one side, depending on which sibling BoxLayout used as its
+        // alignment reference) instead of flush left under the buttons row - BorderLayout.NORTH/
+        // SOUTH stretching each to the container's full width sidesteps BoxLayout's alignmentX
+        // entirely and is the same reliable mechanism the buttons row below already relies on.
+        JPanel progressStack = new JPanel(new BorderLayout(0, 4));
+        progressStack.setOpaque(false);
+        progressStack.add(statusLabel, BorderLayout.NORTH);
+        offlineButton.setVisible(false);
+        offlineButton.addActionListener(e -> { if (onOffline != null) onOffline.run(); });
+        progressStack.add(offlineButton, BorderLayout.EAST);
+        progressStack.add(progressBar, BorderLayout.SOUTH);
+        footer.add(progressStack, BorderLayout.NORTH);
 
         JPanel buttons = new JPanel(new BorderLayout(8, 0));
         buttons.setOpaque(false);
@@ -134,14 +149,20 @@ public final class ModpackDetailPage extends JPanel {
         });
         settingsButton.addActionListener(e -> showSettingsMenu(settingsButton, viewModel));
 
+        manageModsButton = Buttons.iconButton(Icons.puzzlePiece(FOOTER_ICON_SIZE), "Gérer les mods", () -> {
+        });
+        manageModsButton.setEnabled(installed);
+        manageModsButton.addActionListener(e -> viewModel.onManageMods().run());
+
         JPanel leftButtons = new JPanel();
         leftButtons.setOpaque(false);
         leftButtons.add(settingsButton);
+        leftButtons.add(manageModsButton);
         leftButtons.add(Buttons.iconButton(Icons.folder(FOOTER_ICON_SIZE), "Ouvrir le dossier", viewModel.onOpenFolder()));
         buttons.add(leftButtons, BorderLayout.WEST);
         buttons.add(demarrerButton, BorderLayout.CENTER);
 
-        footer.add(buttons);
+        footer.add(buttons, BorderLayout.SOUTH);
         return footer;
     }
 
@@ -150,14 +171,14 @@ public final class ModpackDetailPage extends JPanel {
         JPopupMenu menu = new JPopupMenu();
 
         JMenuItem manage = new JMenuItem("Gérer...");
-        manage.addActionListener(e -> ModpackSettingsDialog.show(this, currentSettings, newSettings -> {
+        manage.addActionListener(e -> ModpackSettingsDialog.show(this, currentSettings, viewModel.availableChannels().get(), newSettings -> {
             currentSettings = newSettings;
             viewModel.onSaveSettings().accept(newSettings);
         }));
         menu.add(manage);
 
         JMenuItem repair = new JMenuItem("Réparer");
-        repair.setEnabled(installed);
+        repair.setEnabled(installed && !localOnly);
         repair.addActionListener(e -> viewModel.onRepair().run());
         menu.add(repair);
 
@@ -197,7 +218,17 @@ public final class ModpackDetailPage extends JPanel {
      * sync+install(+launch) action in all three cases - only the label/icon
      * differ.
      */
+    public void setOfflineAction(Runnable action) { onOffline = action; }
+
+    public void setLocalAvailability(boolean offline, boolean removed) {
+        localOnly = offline || removed;
+        availabilityLabel.setText(removed ? "Retiré du site" : offline ? "Mode hors connexion" : "");
+        availabilityLabel.setVisible(localOnly);
+        applyButtonLabel();
+    }
+
     private void applyButtonLabel() {
+        if (buttonState == ButtonState.IDLE) demarrerButton.setEnabled(!localOnly || installed);
         switch (buttonState) {
             case IDLE -> {
                 if (!installed) {
@@ -241,6 +272,7 @@ public final class ModpackDetailPage extends JPanel {
         SwingUtilities.invokeLater(() -> {
             this.installed = installed;
             applyButtonLabel();
+            manageModsButton.setEnabled(installed);
         });
     }
 
@@ -332,6 +364,7 @@ public final class ModpackDetailPage extends JPanel {
     public void setError(String message) {
         SwingUtilities.invokeLater(() -> {
             statusLabel.setForeground(Colors.danger());
+            offlineButton.setVisible(onOffline != null && !localOnly);
             statusLabel.setText(message);
             statusLabel.setVisible(message != null && !message.isBlank());
         });

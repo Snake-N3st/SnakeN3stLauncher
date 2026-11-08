@@ -21,6 +21,7 @@ class LaunchRequestTest {
                 "49.0.30",
                 2048,
                 "",
+                "/opt/jdk-21/bin/java",
                 secretToken
         );
 
@@ -29,5 +30,8 @@ class LaunchRequestTest {
         assertFalse(text.contains(secretToken));
         assertTrue(text.contains("SnakeTest"));
         assertTrue(text.contains("redacted"));
+        // The chosen JVM is not a secret, and is one of the first things worth seeing in a log when
+        // a launch fails - so unlike the token it must actually appear here.
+        assertTrue(text.contains("/opt/jdk-21/bin/java"));
     }
 }

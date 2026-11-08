@@ -76,4 +76,58 @@ class AppDirsTest {
             }
         }
     }
+
+    @Test
+    void appIdReplacesOnlyTheFolderNameOnEveryOs() {
+        assertEquals(Path.of("/home/u", ".local", "share", "snake-n3st-launcher-test"),
+                AppDirs.resolveRootForTesting(null, "Linux", "/home/u", null, "snake-n3st-launcher-test"));
+        assertEquals(Path.of("/Users/u", "Library", "Application Support", "snake-n3st-launcher-test"),
+                AppDirs.resolveRootForTesting(null, "Mac OS X", "/Users/u", null, "snake-n3st-launcher-test"));
+        assertEquals(Path.of("C:\\Roaming", "snake-n3st-launcher-test"),
+                AppDirs.resolveRootForTesting(null, "Windows 11", "C:\\Users\\u", "C:\\Roaming", "snake-n3st-launcher-test"));
+    }
+
+    @Test
+    void noAppIdMeansTheFolderEveryExistingInstallUses() {
+        assertEquals(Path.of("/home/u", ".local", "share", "snake-n3st"),
+                AppDirs.resolveRootForTesting(null, "Linux", "/home/u", null, null));
+        assertEquals(Path.of("/home/u", ".local", "share", "snake-n3st"),
+                AppDirs.resolveRootForTesting(null, "Linux", "/home/u", null, ""));
+    }
+
+    @Test
+    void anAppIdThatCouldBeAPathIsIgnored() {
+        for (String hostile : new String[] {"..", ".", "../x", "a/b", "a\\b", "/etc", "x/..", " ", "Upper", "a b", "a;b",
+                "-lead", "\u00e9t\u00e9", "x\n", "x\u0000y"}) {
+            assertEquals("snake-n3st", AppDirs.resolveAppId(hostile), "should be refused: [" + hostile + "]");
+            assertEquals(Path.of("/home/u", ".local", "share", "snake-n3st"),
+                    AppDirs.resolveRootForTesting(null, "Linux", "/home/u", null, hostile));
+        }
+    }
+
+    @Test
+    void anExplicitDataDirStillWinsOverTheAppId() {
+        assertEquals(Path.of("/srv/data"),
+                AppDirs.resolveRootForTesting("/srv/data", "Linux", "/home/u", null, "snake-n3st-launcher-test"));
+    }
+
+    @Test
+    void resolveRootReadsTheAppIdSystemProperty() {
+        String previous = System.getProperty("sn3.appId");
+        String previousDir = System.getProperty("sn3.dataDir");
+        try {
+            System.clearProperty("sn3.dataDir");
+            System.setProperty("sn3.appId", "sn3launcher-test");
+            assertEquals("sn3launcher-test", AppDirs.resolveRoot().getFileName().toString());
+        } finally {
+            if (previous == null) {
+                System.clearProperty("sn3.appId");
+            } else {
+                System.setProperty("sn3.appId", previous);
+            }
+            if (previousDir != null) {
+                System.setProperty("sn3.dataDir", previousDir);
+            }
+        }
+    }
 }

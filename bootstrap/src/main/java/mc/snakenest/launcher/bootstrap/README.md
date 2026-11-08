@@ -133,6 +133,60 @@ exists.
   null-checks or logs the same message independently accordingly.
 
 Depends only on `common` (paths/hashing/logging) plus Gson for the tiny
-JSON response - no crypto library beyond what's needed to verify a hash,
-nothing GPL. Swing/AWT (`BootstrapSplash`) is part of the JDK itself, not
+JSON response - no crypto library beyond what's needed to verify a hash
+and an Ed25519 signature (`common`'s `eddsa`), nothing GPL. Swing/AWT (`BootstrapSplash`) is part of the JDK itself, not
 an extra dependency, so this doesn't change that.
+
+## Signature verification
+
+Every release the site publishes carries an Ed25519 signature, and this module checks it **before a single
+byte is downloaded**, in one place: `LauncherReleaseClient#fetchLatestChecked` (plain `fetchLatest` delegates
+to it, so no caller can skip the hard rules). It covers the launcher jar, the bootstrap's own update and the
+`.deb`, with no extra pass over the file: the client rebuilds the signed statement
+(`sn3.artifact.v1` / type / version / sha256 / size - `common`'s `SignedArtifactStatement`, byte-exact with the
+site's `SigningStatement.php` through a shared test vector) from values it already has, and
+`AtomicFiles.writeVerified` then binds the downloaded bytes to that now-authenticated digest. **The server never
+sends the statement**; verifying a message the server chose would prove nothing.
+
+| Situation | What happens |
+|---|---|
+| valid signature | carry on silently; remembered in `trust-state.json` |
+| signature **present but invalid** (wrong key, wrong type, altered version/digest/size, unknown algorithm) | refused - always |
+| signature **absent**, but a valid one was verified before on this installation | refused: a downgrade of the protection itself (the HSTS rule) |
+| signature **absent**, none ever verified | strong warning (`UnverifiedReleaseDialog`), the player may continue; no display = continue, warning logged |
+| build pins no key | nothing is checked (a dev build) |
+
+What "refused" means differs by artifact, on purpose: a **launcher jar** is not started (an error dialog, never
+the "launch the last jar" shortcut, which is reserved for a restricted channel); a **bootstrap update** is not
+applied and the current bootstrap keeps running (an unverified file is never written, and refusing to start
+would trade a real availability risk for nothing); a **`.deb`** whose signature fails is not installed through
+the package manager (it runs as root), while the jar it carries is still delivered, verified on its own.
+
+**Older versions are warned about, not refused.** `trust-state.json` also keeps the highest version verified
+per type, but only to log a rollback: withdrawing a bad release legitimately makes an older one "latest" again,
+and refusing it would turn that into a fleet-wide outage.
+
+### Where the keys come from
+
+Not from Java constants: each site has a vault, hence its own keys, and a constant would make a build for any
+other site (a test server) refuse everything it serves. The site writes its public keys into the `jvm.prop` of
+each bootstrap it publishes (`sn3.signing.launcherKeys`, `sn3.signing.bootstrapKeys`, comma-separated 64-hex),
+and `BundledJvmProperties` turns them into system properties like the rest of that file. That is as strong as a
+constant where it matters: the jar carrying the keys is itself signed, and a bootstrap only ever replaces itself
+with a release verified against the keys it already holds. **Rotation** is therefore just publishing a bootstrap,
+signed with the old key, whose list holds the old and the new one. The same `jvm.prop` also carries
+`sn3.signing.modpackRootKeys`, which the bootstrap does not use itself: it only forwards it to the launcher it
+spawns (not to a replacement bootstrap, whose own `jvm.prop` must win for a rotation to work). `launcher` artifacts are checked against the
+launcher keys, `bootstrap` and `deb` against the bootstrap keys. A malformed entry is skipped with an error in
+the log, and if none is left the type is treated as unconfigured, not unverifiable: a typo must not become a
+fleet-wide refusal.
+
+### What this does not cover
+
+- **The first installation** is trust-on-first-use: the jar a player downloads (or the `.exe`, the portable zip,
+  the `/sh` and `/pwsh` one-liners) carries a digest the same site vouches for. Everything *after* the first is
+  authenticated.
+- **A bootstrap from before this feature** verifies nothing, and cannot be made to. Publishing the first
+  verifying bootstrap is the point of no return on the site: from then on the site must never stop signing,
+  because a client that has seen a signature refuses its absence.
+- `trust-state.json` lives in the player's own data directory; someone who can edit it can replace the jar.

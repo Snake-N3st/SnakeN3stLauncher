@@ -13,25 +13,33 @@
     <artifactId>common</artifactId>
     <!-- Shared utilities. Bumped only when something here actually changes - a launcher-only
          fix leaves this version alone. See VERSIONING.md. -->
-    <version>2.0.0</version>
+    <version>2.3.0</version>
     <packaging>jar</packaging>
 
     <!--
-        Tiny, dependency-free utilities shared by both "bootstrap" and
-        "launcher" (paths, hex/SHA-256, atomic file writes, logging). Exists
+        Tiny utilities shared by both "bootstrap" and "launcher" (paths,
+        hex/SHA-256, atomic file writes, logging), plus the Ed25519 key
+        handling/signing/encrypted-at-rest storage needed for the
+        restricted-distribution-channel auth flow (bootstrap must be able to
+        prove eligibility before fetching a gated launcher release). Exists
         specifically because bootstrap and launcher must agree on exactly
-        where the cache/data directories are - two independent
-        implementations of that logic would drift and break the handoff
-        between them. No third-party dependency of any kind.
+        where the cache/data directories are, and on exactly how a request
+        gets signed - two independent implementations of either would drift
+        and break the handoff between them.
+
+        Only third-party dependency: net.i2p.crypto:eddsa (CC0 1.0, public
+        domain) - permissive, so it adds no licensing complication for either
+        module below.
 
         Licensed GPL-3.0 (see LICENSE) - not because this module depends on
-        any GPL code itself (it doesn't), but because a compiled copy of it
-        ends up embedded in "launcher"'s combined GPL binary, whose
-        Corresponding Source must be available under GPL-compatible terms.
-        "bootstrap" also depends on this module but never combines with
-        GPL code, so it keeps its own separate, proprietary license (see
-        bootstrap/LICENSE) - reusing the same source in a non-GPL-combined
-        product is fine since the copyright holder is the same for both.
+        any GPL code itself (it doesn't; eddsa above is CC0), but because a
+        compiled copy of it ends up embedded in "launcher"'s combined GPL
+        binary, whose Corresponding Source must be available under
+        GPL-compatible terms. "bootstrap" also depends on this module but
+        never combines with GPL code, so it keeps its own separate,
+        proprietary license (see bootstrap/LICENSE) - reusing the same
+        source in a non-GPL-combined product is fine since the copyright
+        holder is the same for both.
     -->
 
     <licenses>
@@ -42,6 +50,11 @@
     </licenses>
 
     <dependencies>
+        <dependency>
+            <groupId>net.i2p.crypto</groupId>
+            <artifactId>eddsa</artifactId>
+            <version>0.3.0</version>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

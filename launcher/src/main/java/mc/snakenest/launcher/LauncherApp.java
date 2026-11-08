@@ -10,6 +10,7 @@ import mc.snakenest.launcher.bugreport.BugReportApiClient;
 import mc.snakenest.launcher.bugreport.BugReportType;
 import mc.snakenest.launcher.config.AssetStorageMode;
 import mc.snakenest.launcher.config.ConfigStore;
+import mc.snakenest.launcher.config.LaunchWindowAction;
 import mc.snakenest.launcher.config.LauncherConfig;
 import mc.snakenest.launcher.crypto.Ed25519KeyPair;
 import mc.snakenest.launcher.crypto.EncryptedFileKeyStorage;
@@ -22,11 +23,20 @@ import mc.snakenest.launcher.game.GameInstallService;
 import mc.snakenest.launcher.game.GameLaunchService;
 import mc.snakenest.launcher.game.InstallRequest;
 import mc.snakenest.launcher.game.InstallStep;
+import mc.snakenest.launcher.game.JavaRuntimes;
 import mc.snakenest.launcher.game.LaunchRequest;
 import mc.snakenest.launcher.game.OfflineUuids;
 import mc.snakenest.launcher.game.assets.SharedAssetsLinker;
 import mc.snakenest.launcher.maintenance.CleanupService;
+import mc.snakenest.launcher.modpack.FileMetas;
+import mc.snakenest.launcher.modpack.InstanceActivity;
+import mc.snakenest.launcher.modpack.InstanceState;
+import mc.snakenest.launcher.modpack.InstanceStateRegistry;
 import mc.snakenest.launcher.modpack.LocalManifestStore;
+import mc.snakenest.launcher.modpack.ManifestDiffer;
+import mc.snakenest.launcher.modpack.ModBlacklistCacheStore;
+import mc.snakenest.launcher.modpack.ModBlacklistEntry;
+import mc.snakenest.launcher.modpack.ModBlacklistedException;
 import mc.snakenest.launcher.modpack.ModpackApiClient;
 import mc.snakenest.launcher.modpack.ModpackManifest;
 import mc.snakenest.launcher.modpack.ModpackSettings;
@@ -35,6 +45,7 @@ import mc.snakenest.launcher.modpack.ModpackSummary;
 import mc.snakenest.launcher.modpack.ModpackSyncEngine;
 import mc.snakenest.launcher.modpack.SensitiveFileVault;
 import mc.snakenest.launcher.modpack.StoredManifest;
+import mc.snakenest.launcher.net.LogoCache;
 import mc.snakenest.launcher.news.NewsApiClient;
 import mc.snakenest.launcher.news.Post;
 import mc.snakenest.launcher.ui.LauncherFrame;
@@ -59,14 +70,18 @@ import mc.snakenest.launcher.ui.settings.SettingsPage;
 import mc.snakenest.launcher.util.AppDirs;
 import mc.snakenest.launcher.util.HumanSize;
 import mc.snakenest.launcher.util.Log;
+import mc.snakenest.launcher.util.Sha256;
+import mc.snakenest.launcher.util.StartupSignal;
 
 import javax.crypto.SecretKey;
 import javax.swing.SwingUtilities;
 import java.awt.Desktop;
+import java.awt.Window;
 import java.awt.image.BufferedImage;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -105,6 +120,7 @@ final class LauncherApp {
     private final GameInstallService gameInstallService;
     private final GameLaunchService gameLaunchService;
     private final ModpackSettingsStore modpackSettingsStore;
+    private final ModBlacklistCacheStore modBlacklistCache = new ModBlacklistCacheStore();
     private final SharedAssetsLinker assetsLinker;
     private final CleanupService cleanupService;
     private final BugReportApiClient bugReportApi;
@@ -124,12 +140,24 @@ final class LauncherApp {
         return t;
     });
 
+    private volatile boolean offlineMode;
+    private volatile String lastRequestFailure;
+    private volatile Set<String> removedPackSlugs = Set.of();
+    private final mc.snakenest.launcher.modpack.LocalPackCatalogStore localCatalog;
     private PlayerSession session;
     private ClientInfo clientInfo;
+    private final LogoCache logoCache;
+    private final mc.snakenest.launcher.net.PackIconCache iconCache;
+
     private BufferedImage clientLogo;
     // Fetched once at login/startup (never on-demand when the account popover is opened - see ui/README.md).
     private PlayerInfo playerInfo;
     private BufferedImage playerAvatar;
+    // Fetched once at startup (loadChannelsForSettings) and shared by the Settings page's own
+    // channel picker and every modpack's "Gerer" dialog - volatile since it's written on
+    // backgroundExecutor and read from the EDT whenever either picker opens, with no other
+    // synchronization between the two.
+    private volatile java.util.List<mc.snakenest.launcher.auth.ChannelInfo> availableChannels = java.util.List.of();
     private LauncherFrame shellFrame;
     /**
      * The login window, while it's up. Closed by {@link #showShell()} rather than by itself, so
@@ -139,31 +167,14 @@ final class LauncherApp {
      */
     private LoginFrame loginFrame;
 
-    /** The one thing this launcher can be doing to a modpack at a time - never more than one in flight. */
-    private enum Activity { INSTALLING, RUNNING, STOPPING }
-
     /**
-     * One immutable snapshot of "what the launcher is currently doing, and to which modpack" -
-     * {@code null} when nothing is. Replaces what used to be four separate fields
-     * ({@code currentInstallTask}, {@code runningGameProcess}, {@code runningModpackSlug},
-     * {@code stopRequestedForRunningGame}) that were each set/cleared independently by whichever
-     * method happened to touch them.
-     *
-     * <p>That split was the actual bug behind "the button still says Demarrer while a modpack is
-     * downloading": {@code RUNNING} had a slug tracked (so a freshly (re)built page/card could at
-     * least restore that one state), but installing/downloading never got the same treatment -
-     * there was no field at all recording "an install is in progress for slug X", so
-     * {@code showModpackDetail}/{@code loadModpackList} had nothing to check and always defaulted
-     * a new page/card to idle. Every method that used to touch one of the four old fields now
-     * replaces this single reference wholesale instead - one atomic fact, read back by the one
-     * {@link #restoreActiveState}/{@link #restoreActiveCardState} pair for every activity the
-     * same way, instead of a bespoke "if slug matches, call setX" check that's easy to forget
-     * writing for the next new state.
+     * What every modpack instance is currently doing - installing, running, or being stopped -
+     * tracked independently per slug. See {@link InstanceStateRegistry}'s own Javadoc for the bug
+     * this replaced: a single shared field could only ever describe one modpack at a time, so
+     * starting an install on a second modpack while a first one was still running silently broke
+     * the first one's own Arreter/Annuler buttons and its status on a freshly (re)built page/card.
      */
-    private record ActiveModpack(String slug, Activity activity, java.util.concurrent.Future<?> installTask, Process gameProcess) {
-    }
-
-    private volatile ActiveModpack active;
+    private final InstanceStateRegistry instanceStates = new InstanceStateRegistry();
 
     // The list currently shown, if any - lets card-state pushes (setCardBusy/Running/Installed)
     // reach the right ModpackCardView regardless of whether that modpack's detail page is also
@@ -191,6 +202,10 @@ final class LauncherApp {
         this.gameInstallService = gameInstallService;
         this.gameLaunchService = gameLaunchService;
         this.modpackSettingsStore = new ModpackSettingsStore(dirs);
+        this.logoCache = new LogoCache(dirs);
+        this.iconCache = new mc.snakenest.launcher.net.PackIconCache(dirs.cache().resolve("public-icons"), baseUrl.toString());
+        this.localCatalog = new mc.snakenest.launcher.modpack.LocalPackCatalogStore(
+                dirs.root().resolve("local-pack-catalog.json"), baseUrl.toString());
         this.assetsLinker = new SharedAssetsLinker(dirs);
         this.cleanupService = new CleanupService(dirs);
         this.bugReportApi = bugReportApi;
@@ -215,6 +230,11 @@ final class LauncherApp {
      */
     void start() {
         resealSensitiveFiles();
+        if (Boolean.getBoolean("sn3.offline")) {
+            try { restoreOfflineIdentity(); SwingUtilities.invokeLater(this::showShell); }
+            catch (Exception unavailable) { lastRequestFailure = unavailable.getMessage(); SwingUtilities.invokeLater(this::showLogin); }
+            return;
+        }
         fetchClientBrandingBlocking();
 
         Ed25519KeyPair storedKey = loadStoredKeyPair();
@@ -225,11 +245,9 @@ final class LauncherApp {
             if (fetchPlayerInfoBlocking()) {
                 SwingUtilities.invokeLater(this::showShell);
             } else {
-                // The server rejected the stored key outright (401/403) - not something a retry
-                // or a slower connection can fix, so opening the shell would just leave every
-                // signed call failing the same way. Forget the now-useless key locally and fall
-                // back to the login screen instead.
-                forgetInvalidSession();
+                // A 403 also covers clock skew and replay: never destroy a device's saved
+                // credential merely because its request was rejected.
+                suspendRejectedSession();
                 SwingUtilities.invokeLater(this::showLogin);
             }
         } else {
@@ -254,12 +272,54 @@ final class LauncherApp {
 
     /** Best-effort; leaves {@link #clientInfo}/{@link #clientLogo} {@code null} on any failure or timeout. */
     private void fetchClientBrandingBlocking() {
+        // Straight off disk, no network: the logo changes about once a year, so making every
+        // start wait on a download for it was paying a round-trip on every launch for nothing.
+        // The real check happens in refreshLogoInBackground() once a window is already up.
+        clientLogo = logoCache.cached();
+
         try {
             clientInfo = runWithTimeout(() -> authApi.fetchClientInfo(clientId));
-            clientLogo = RemoteImages.tryLoad(clientInfo.image());
             connectDiscordPresence();
         } catch (Exception e) {
             Log.warn(LauncherApp.class, "Could not fetch client branding: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Re-checks the logo against the site and swaps it in if it actually changed, long after the
+     * startup path cares - deliberately started only once a window is on screen, so a slow or
+     * unreachable server delays nothing a player can see.
+     */
+    private void refreshLogoInBackground() {
+        if (offlineMode) return;
+        if (clientInfo == null) {
+            return;
+        }
+
+        Thread refresh = new Thread(() -> {
+            BufferedImage updated = logoCache.refreshIfChanged(clientInfo.image());
+
+            if (updated != null) {
+                SwingUtilities.invokeLater(() -> applyClientLogo(updated));
+            }
+        }, "logo-refresh");
+
+        // Daemon: this must never be the thread that keeps the JVM alive after the player quits.
+        refresh.setDaemon(true);
+        refresh.start();
+    }
+
+    /** Applies a freshly downloaded logo to every window currently showing the old one. */
+    private void applyClientLogo(BufferedImage logo) {
+        clientLogo = logo;
+
+        if (shellFrame != null) {
+            shellFrame.setLogo(logo);
+            shellFrame.setIconImage(logo);
+        }
+
+        if (loginFrame != null) {
+            loginFrame.setIconImage(logo);
         }
     }
 
@@ -409,6 +469,53 @@ final class LauncherApp {
         configStore.save(config);
     }
 
+    private void setLaunchWindowAction(LaunchWindowAction action) {
+        var config = configStore.load();
+        config.setLaunchWindowAction(action);
+        configStore.save(config);
+    }
+
+    /**
+     * Only takes effect on the bootstrap's *next* run (see {@code config.LauncherConfig#channel}'s
+     * own Javadoc) - this running launcher never re-fetches its own jar.
+     */
+    private void setChannel(String channel) {
+        var config = configStore.load();
+        config.setChannel(channel);
+        configStore.save(config);
+    }
+
+    /**
+     * The Java binary modpacks run on unless one overrides it - applies to the next launch, since
+     * an already-running game keeps the JVM it was started with. {@code null} restores the
+     * launcher's own JVM (see {@code game.JavaRuntimes}).
+     */
+    private void setDefaultJavaPath(String javaPath) {
+        var config = configStore.load();
+        config.setDefaultJavaPath(JavaRuntimes.normalize(javaPath));
+        configStore.save(config);
+    }
+
+    /**
+     * Best-effort - a failed fetch just leaves the Settings page's channel picker showing
+     * "Chargement..." forever and every modpack's "Gerer" dialog offering only "canal par
+     * défaut", no error dialog for something this minor. Also populates {@link #availableChannels},
+     * shared with every modpack detail page's own channel picker (see
+     * {@code ModpackDetailViewModel#availableChannels}) so it isn't fetched twice.
+     */
+    private void loadChannelsForSettings(SettingsPage settingsPage) {
+        if (offlineMode) return;
+        backgroundExecutor.execute(() -> {
+            try {
+                var channels = authApi.fetchChannels();
+                availableChannels = channels;
+                settingsPage.setAvailableChannels(channels, configStore.load().channel());
+            } catch (Exception e) {
+                Log.warn(LauncherApp.class, "Could not fetch distribution channels: " + e.getMessage());
+            }
+        });
+    }
+
     /**
      * The "Migrer les modpacks déjà installés" button: applies the chosen storage mode to instances
      * that are already on disk, which changing the setting alone deliberately doesn't do.
@@ -417,7 +524,7 @@ final class LauncherApp {
      * files an install is writing or a game has open.
      */
     private void migrateAssetStorage(java.awt.Component parent) {
-        if (active != null) {
+        if (instanceStates.isAnyActive()) {
             javax.swing.JOptionPane.showMessageDialog(parent,
                     "Impossible de migrer pendant qu'un modpack est en cours d'installation ou de jeu.",
                     "Migration", javax.swing.JOptionPane.WARNING_MESSAGE);
@@ -496,7 +603,7 @@ final class LauncherApp {
      * off the EDT (walking every instance can take a moment on a big install).
      */
     private void runCleanup(java.awt.Component parent) {
-        if (active != null) {
+        if (instanceStates.isAnyActive()) {
             javax.swing.JOptionPane.showMessageDialog(parent,
                     "Impossible de nettoyer pendant qu'un modpack est en cours d'installation ou de jeu.",
                     "Nettoyage", javax.swing.JOptionPane.WARNING_MESSAGE);
@@ -535,7 +642,7 @@ final class LauncherApp {
         if (input == null) {
             return;
         }
-        String modpackSlug = active != null ? active.slug() : null;
+        String modpackSlug = instanceStates.anyRunningSlug().orElse(null);
         backgroundExecutor.execute(() -> {
             boolean sent = bugReportApi.submit(BugReportType.MANUAL, input.summary(), input.description(), null, modpackSlug);
             SwingUtilities.invokeLater(() -> javax.swing.JOptionPane.showMessageDialog(parent,
@@ -596,9 +703,8 @@ final class LauncherApp {
 
     /**
      * Best-effort; leaves {@link #playerInfo}/{@link #playerAvatar} {@code null} on any failure
-     * or timeout, except a 401/403 rejecting the stored key itself - that's reported back to the
-     * caller instead of swallowed, since {@link #start()} needs to know to forget the now-useless
-     * key rather than open a shell every signed call will keep failing in.
+     * or timeout. A 401/403 is reported to the caller so it can request revalidation without
+     * deleting the stored key: the server also uses 403 for clock skew and signature replay.
      *
      * @return false if the stored key was rejected (401/403); true otherwise, including on any
      * other failure (offline, timeout, server error) where the cached data is simply left stale
@@ -606,9 +712,13 @@ final class LauncherApp {
     private boolean fetchPlayerInfoBlocking() {
         try {
             playerInfo = runWithTimeout(() -> authApi.fetchPlayerInfo(session));
-            playerAvatar = RemoteImages.tryLoad(playerInfo.avatar());
+            lastRequestFailure = null;
+            try { localCatalog.cacheUsername(session.playerId(), playerInfo.username()); }
+            catch (Exception cacheFailure) { Log.warn(LauncherApp.class, "Could not cache player identity"); }
+            playerAvatar = iconCache.load("avatar:" + session.playerId(), playerInfo.avatar(), null, true);
             return true;
         } catch (LauncherApiException e) {
+            lastRequestFailure = e.getMessage();
             if (e.statusCode() == 401 || e.statusCode() == 403) {
                 Log.warn(LauncherApp.class, "Stored session was rejected (status " + e.statusCode() + ")");
                 return false;
@@ -616,6 +726,7 @@ final class LauncherApp {
             Log.warn(LauncherApp.class, "Could not fetch player info: " + e.getMessage());
             return true;
         } catch (Exception e) {
+            lastRequestFailure = e.getMessage();
             Log.warn(LauncherApp.class, "Could not fetch player info: " + e.getMessage());
             return true;
         }
@@ -659,8 +770,16 @@ final class LauncherApp {
                 return;
             }
             session = new PlayerSession(key, playerId, clientId);
+            offlineMode = false;
             backgroundExecutor.execute(() -> {
-                fetchPlayerInfoBlocking();
+                if (!fetchPlayerInfoBlocking()) {
+                    suspendRejectedSession();
+                    SwingUtilities.invokeLater(() -> {
+                        if (this.loginFrame != null) this.loginFrame.showPostLoginFailure(
+                                "Session non validée. Vérifie l’horloge de l’appareil puis réessaie. La clé enregistrée est conservée.");
+                    });
+                    return;
+                }
                 SwingUtilities.invokeLater(this::showShell);
             });
         });
@@ -673,23 +792,58 @@ final class LauncherApp {
         // Kept so showShell can close it only once the shell window exists - see LoginFrame's
         // onSucceeded, which deliberately no longer disposes itself.
         this.loginFrame = loginFrame;
+        loginFrame.setOfflineAction(offlineAction());
+        if (lastRequestFailure != null) loginFrame.showPostLoginFailure(
+                "Connexion au site indisponible. Réessaie ou utilise les installations locales.");
         loginFrame.setVisible(true);
+
+        // The login window is the first thing a signed-out player sees, so this is where the
+        // bootstrap's splash should hand over. Waiting for the shell instead would leave the
+        // splash stacked on top of the login window for as long as the player takes to sign in.
+        StartupSignal.signalReady();
+
+        refreshLogoInBackground();
+    }
+
+    /**
+     * Raises and focuses a window reliably, including on Windows where plain
+     * {@code toFront()}/{@code requestFocus()} is routinely a no-op: Windows' foreground-lock
+     * mechanism only lets the process that currently owns the foreground (or one it explicitly
+     * hands focus to) call {@code SetForegroundWindow} - a background process asking Swing to
+     * raise its own window doesn't qualify, so the window silently stays behind whatever already
+     * had focus. Toggling always-on-top briefly forces a topmost restack Windows honors
+     * regardless of that restriction, then reverting it stops the window from staying pinned
+     * above everything else afterward.
+     */
+    private static void forceToFront(Window window) {
+        window.setAlwaysOnTop(true);
+        window.toFront();
+        window.requestFocus();
+        window.setAlwaysOnTop(false);
     }
 
     private void showShell() {
+        LauncherFrame previousFrame = shellFrame;
         LauncherFrame frame = new LauncherFrame(this::showAccountPopover);
         this.shellFrame = frame;
+        if (offlineMode) frame.setTitle(frame.getTitle() + " — Hors connexion");
 
         NewsSectionPage newsSection = buildNewsSection(frame);
         ModpackSectionPage modpackSection = buildModpackSection(frame);
 
-        frame.addPage(NavTarget.SETTINGS, new SettingsPage(
+        SettingsPage settingsPage = new SettingsPage(
                 themeController.current(),
                 themeController::switchTo,
                 configStore.load().discordEnabled(),
                 this::setDiscordEnabled,
                 configStore.load().assetStorageMode(),
                 this::setAssetStorageMode,
+                configStore.load().launchWindowAction(),
+                this::setLaunchWindowAction,
+                configStore.load().channel(),
+                this::setChannel,
+                configStore.load().defaultJavaPath(),
+                this::setDefaultJavaPath,
                 pinProtection.isEnabled(),
                 enable -> setPinEnabled(enable, frame),
                 () -> migrateAssetStorage(frame),
@@ -701,7 +855,9 @@ final class LauncherApp {
                 clientInfo == null || clientInfo.bugReportsAllowed(),
                 () -> reportBug(frame),
                 this::logout
-        ));
+        );
+        frame.addPage(NavTarget.SETTINGS, settingsPage);
+        loadChannelsForSettings(settingsPage);
         frame.addPage(NavTarget.NEWS, newsSection);
         frame.addPage(NavTarget.MODPACKS, modpackSection);
 
@@ -723,6 +879,20 @@ final class LauncherApp {
             frame.setIconImage(clientLogo);
         }
         frame.setVisible(true);
+        if (previousFrame != null && previousFrame != frame) previousFrame.dispose();
+        // setVisible(true)/toFront() alone doesn't reliably raise/focus the window on Windows -
+        // Windows actively blocks a background process from stealing foreground focus
+        // (SetForegroundWindow restrictions), so plain toFront() is routinely a no-op there,
+        // confirmed on a real Windows machine (the shell window opened behind whatever else had
+        // focus and needed a manual click). See forceToFront's own doc for the actual fix.
+        forceToFront(frame);
+
+        // Lets the bootstrap retire its splash now that there is a real window to replace it.
+        // Also reached without any login window at all, when a stored session skips straight here.
+        StartupSignal.signalReady();
+
+        // Only now, with the window up, is it worth asking the site whether the logo changed.
+        refreshLogoInBackground();
 
         // Only now that the shell is on screen is it safe to drop the login window - see the
         // loginFrame field. No-op when there was no login this run (a stored session).
@@ -753,6 +923,10 @@ final class LauncherApp {
 
     /** Fetches the news list and replaces the section's list page - the initial load, and what the topbar's refresh button re-runs while the list is shown. */
     private void loadNewsList(LauncherFrame frame, NewsSectionPage section) {
+        if (offlineMode) {
+            section.replaceList(new NewsListPage(new NewsListViewModel(List.of(), post -> { })));
+            return;
+        }
         // Immediate visual transition, same reasoning as showModpackDetail's LoadingPanel - a
         // click on "Actualiser" that visibly does nothing until the fetch completes reads as the
         // app hanging.
@@ -763,16 +937,16 @@ final class LauncherApp {
                 List<Post> posts = newsApi.listPosts();
                 SwingUtilities.invokeLater(() -> {
                     NewsListPage realList = new NewsListPage(new NewsListViewModel(posts,
-                            post -> showNewsDetail(frame, section, post)));
+                            post -> openUrl(post.url())));
                     section.replaceList(realList);
                 });
             } catch (Exception e) {
                 Log.warn(LauncherApp.class, "Could not load news: " + e.getMessage());
-                // Falls back to an empty list rather than leaving the loading spinner stuck
-                // forever - matches this method's pre-loading-screen failure behavior, just
-                // without leaving a misleading "still loading" indicator on screen.
-                SwingUtilities.invokeLater(() -> section.replaceList(new NewsListPage(new NewsListViewModel(List.of(), post -> {
-                }))));
+                SwingUtilities.invokeLater(() -> section.replaceList(new mc.snakenest.launcher.ui.common.ErrorPanel(
+                        "Impossible de charger les actualités : " + e.getMessage(),
+                        mc.snakenest.launcher.util.Throwables.stackTraceOf(e),
+                        () -> loadNewsList(frame, section),
+                        () -> frame.navigateTo(NavTarget.MODPACKS), offlineAction())));
             }
         });
     }
@@ -807,30 +981,104 @@ final class LauncherApp {
 
         backgroundExecutor.execute(() -> {
             try {
-                List<ModpackSummary> modpacks = modpackApi.listModpacks(session);
+                Set<String> local = localInstalledSlugs();
+                List<ModpackSummary> modpacks = offlineMode ? localCatalog.localSummaries(local)
+                        : localCatalog.mergeInstalled(modpackApi.listModpacks(session), local);
+                removedPackSlugs = localCatalog.removedSlugs(local);
                 Set<String> installed = installedSlugs(modpacks);
-                Set<String> updateAvailable = updateAvailableSlugs(modpacks);
+                Set<String> updateAvailable = offlineMode ? Set.of() : updateAvailableSlugs(modpacks).stream()
+                        .filter(slug -> !removedPackSlugs.contains(slug)).collect(Collectors.toSet());
                 Map<String, BufferedImage> logos = fetchModpackLogos(modpacks);
                 SwingUtilities.invokeLater(() -> {
                     ModpackListViewModel viewModel = new ModpackListViewModel(modpacks, installed, updateAvailable, logos,
                             modpack -> showModpackDetail(frame, section, modpack),
                             this::quickInstallAndLaunch,
-                            this::cancelInstall,
-                            this::stopGame,
-                            this::killGame);
+                            modpack -> cancelInstall(modpack.slug()),
+                            modpack -> stopGame(modpack.slug()),
+                            modpack -> killGame(modpack.slug()));
+                    viewModel.setLocalAvailability(offlineMode, removedPackSlugs);
                     currentListViewModel = viewModel;
                     section.replaceList(new ModpackListPage(viewModel));
                     restoreActiveCardState(viewModel);
                 });
             } catch (Exception e) {
                 Log.warn(LauncherApp.class, "Could not load modpacks: " + e.getMessage());
-                // Falls back to an empty list rather than leaving the loading spinner stuck
-                // forever - matches this method's pre-loading-screen failure behavior, just
-                // without leaving a misleading "still loading" indicator on screen.
-                SwingUtilities.invokeLater(() -> section.replaceList(new ModpackListPage(
-                        new ModpackListViewModel(List.of(), Set.of(), m -> {
-                        }, m -> {
-                        }))));
+                // A retryable error state, not the empty-list message - falling back to "Aucun
+                // modpack disponible" here used to silently pass off a real failure (e.g. an
+                // Access Denied from the server) as "you just don't have any modpacks", which is
+                // actively misleading instead of merely unhelpful.
+                SwingUtilities.invokeLater(() -> section.replaceList(new mc.snakenest.launcher.ui.common.ErrorPanel(
+                        "Impossible de charger les modpacks : " + e.getMessage(),
+                        mc.snakenest.launcher.util.Throwables.stackTraceOf(e),
+                        () -> loadModpackList(frame, section),
+                        () -> frame.navigateTo(NavTarget.NEWS), offlineAction())));
+            }
+        });
+    }
+
+    private boolean localOnly(String slug) { return offlineMode || removedPackSlugs.contains(slug); }
+
+    private boolean isLocallyInstalled(String slug) {
+        if (!slug.matches("[a-z0-9]+(?:-[a-z0-9]+)*")) return false;
+        try {
+            Path instance = dirs.instance(slug);
+            return Files.isDirectory(instance, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    && Files.isRegularFile(instance.resolve("client.jar")) && Files.size(instance.resolve("client.jar")) > 0
+                    && new LocalManifestStore().load(instance).isPresent();
+        } catch (Exception ignored) { return false; }
+    }
+
+    private Set<String> localInstalledSlugs() throws java.io.IOException {
+        if (!Files.isDirectory(dirs.instances())) return Set.of();
+        try (var directories = Files.list(dirs.instances())) {
+            return directories.map(path -> path.getFileName().toString()).filter(this::isLocallyInstalled).collect(Collectors.toSet());
+        }
+    }
+
+    private ModpackManifest localManifest(String slug) throws java.io.IOException {
+        if (!isLocallyInstalled(slug)) throw new java.io.IOException("Ce modpack n’est pas entièrement installé sur cet appareil.");
+        var cached = localCatalog.loadManifest(slug);
+        if (cached.isPresent()) return cached.get();
+        var recovered = mc.snakenest.launcher.game.LocalInstalledManifestRecovery.recover(dirs.instance(slug));
+        if (recovered.isEmpty()) throw new java.io.IOException("Métadonnées de lancement local absentes. Connecte-toi une fois pour terminer cette installation.");
+        localCatalog.saveManifest(slug, recovered.get());
+        return recovered.get();
+    }
+
+    private String localUsername() throws java.io.IOException {
+        if (session == null) throw new java.io.IOException("Aucune session enregistrée sur cet appareil.");
+        String username = localCatalog.loadUsername(session.playerId()).orElseThrow(() -> new java.io.IOException(
+                "Aucun pseudo mémorisé pour ce compte. Connecte-toi une fois pour préparer le mode hors connexion."));
+        if (!username.matches("[A-Za-z0-9_]{1,16}")) throw new java.io.IOException("Pseudo local invalide.");
+        return username;
+    }
+
+    private Runnable offlineAction() {
+        return configStore.load().playerId() == null ? null : this::enterOfflineMode;
+    }
+
+    private void restoreOfflineIdentity() throws java.io.IOException {
+        Long playerId = configStore.load().playerId();
+        Ed25519KeyPair key = loadStoredKeyPair();
+        if (key == null || playerId == null) throw new java.io.IOException("Aucune session sauvegardée sur cet appareil.");
+        session = new PlayerSession(key, playerId, clientId);
+        String username = localUsername();
+        offlineMode = true;
+        playerInfo = new PlayerInfo(username, "Hors connexion", null, null);
+        playerAvatar = iconCache.cached("avatar:" + playerId);
+        clientLogo = logoCache.cached();
+    }
+
+    private void enterOfflineMode() {
+        backgroundExecutor.execute(() -> {
+            try {
+                restoreOfflineIdentity();
+                SwingUtilities.invokeLater(this::showShell);
+            } catch (Exception failure) {
+                SwingUtilities.invokeLater(() -> {
+                    if (loginFrame != null) loginFrame.showPostLoginFailure(failure.getMessage());
+                    else javax.swing.JOptionPane.showMessageDialog(shellFrame, failure.getMessage(), "Mode hors connexion", javax.swing.JOptionPane.ERROR_MESSAGE);
+                });
             }
         });
     }
@@ -838,7 +1086,7 @@ final class LauncherApp {
     private Set<String> installedSlugs(List<ModpackSummary> modpacks) {
         return modpacks.stream()
                 .map(ModpackSummary::slug)
-                .filter(slug -> java.nio.file.Files.isDirectory(dirs.instance(slug)))
+                .filter(this::isLocallyInstalled)
                 .collect(Collectors.toSet());
     }
 
@@ -875,7 +1123,7 @@ final class LauncherApp {
         Map<String, java.util.concurrent.CompletableFuture<BufferedImage>> futures = new java.util.HashMap<>();
         for (ModpackSummary modpack : modpacks) {
             futures.put(modpack.slug(), java.util.concurrent.CompletableFuture.supplyAsync(
-                    () -> RemoteImages.tryLoad(modpack.image()), backgroundExecutor));
+                    () -> iconCache.load("pack:" + modpack.slug(), modpack.image(), modpack.latestVersion(), !localOnly(modpack.slug())), backgroundExecutor));
         }
         Map<String, BufferedImage> logos = new java.util.HashMap<>();
         futures.forEach((slug, future) -> logos.put(slug, future.join()));
@@ -896,17 +1144,27 @@ final class LauncherApp {
         // even before the manifest fetch below has completed.
         frame.setOnRefresh(() -> showModpackDetail(frame, section, modpack));
 
-        boolean installed = java.nio.file.Files.isDirectory(dirs.instance(modpack.slug()));
+        boolean installed = isLocallyInstalled(modpack.slug());
 
         backgroundExecutor.execute(() -> {
             try {
-                ModpackManifest manifest = modpackApi.getManifest(modpack.slug(), null, session);
+                // Read once just for the saved channel, before the manifest fetch that needs it -
+                // re-read below with the manifest-aware fallback once the real settings (if any
+                // were ever saved) are known either way, channel included.
+                String channel = modpackSettingsStore.load(modpack.slug(), ModpackSettings.defaults()).channel();
+                boolean localOnly = localOnly(modpack.slug());
+                ModpackManifest manifest = localOnly ? localManifest(modpack.slug())
+                        : modpackApi.getManifest(modpack.slug(), null, channel, session);
                 ModpackSettings settings = modpackSettingsStore.load(modpack.slug(),
                         ModpackSettings.defaults(manifest.defaultMemoryMb(), manifest.defaultJvmArgs()));
-                BufferedImage logo = RemoteImages.tryLoad(modpack.image());
-                boolean updateAvailable = isUpdateAvailable(modpack.slug(), manifest.version());
+                BufferedImage logo = iconCache.load("pack:" + modpack.slug(), modpack.image(), modpack.latestVersion(), !localOnly);
+                boolean updateAvailable = !localOnly && isUpdateAvailable(modpack.slug(), manifest.version());
                 Long installedSizeBytes = installedSizeBytes(dirs.instance(modpack.slug()));
                 SwingUtilities.invokeLater(() -> {
+                    // Forward reference: onManageMods needs to navigate back to this exact
+                    // detail page instance once InstalledModsPage's own "Retour" is clicked, but
+                    // that page isn't built until after the ViewModel that captures this lambda.
+                    ModpackDetailPage[] detailHolder = new ModpackDetailPage[1];
                     ModpackDetailViewModel viewModel = new ModpackDetailViewModel(
                             modpack.slug(),
                             modpack.name(),
@@ -921,15 +1179,22 @@ final class LauncherApp {
                             settings,
                             () -> installAndLaunch(modpack, manifest),
                             () -> repairModpack(modpack, manifest),
+                            () -> section.showInstalledMods(new mc.snakenest.launcher.ui.modpack.InstalledModsPage(
+                                    manifest, dirs.instance(modpack.slug()), backgroundExecutor,
+                                    () -> section.showDetail(detailHolder[0]))),
                             () -> uninstallModpack(modpack),
-                            this::cancelInstall,
-                            this::stopGame,
-                            this::killGame,
+                            () -> cancelInstall(modpack.slug()),
+                            () -> stopGame(modpack.slug()),
+                            () -> killGame(modpack.slug()),
                             newSettings -> modpackSettingsStore.save(modpack.slug(), newSettings),
                             () -> openFolder(dirs.instance(modpack.slug())),
-                            back
+                            back,
+                            () -> availableChannels
                     );
                     ModpackDetailPage detail = new ModpackDetailPage(viewModel);
+                    detail.setLocalAvailability(offlineMode, removedPackSlugs.contains(modpack.slug()));
+                    detail.setOfflineAction(offlineAction());
+                    detailHolder[0] = detail;
                     // A brand new page always starts idle (ModpackDetailPage has no way to know
                     // otherwise) - restore whatever's genuinely happening to this modpack right
                     // now, since this runs on every open AND every "Actualiser"/back-then-reopen,
@@ -946,8 +1211,9 @@ final class LauncherApp {
                 // re-opening the modpack from the list.
                 SwingUtilities.invokeLater(() -> section.showDetail(new mc.snakenest.launcher.ui.common.ErrorPanel(
                         "Impossible de charger \"" + modpack.name() + "\" : " + e.getMessage(),
+                        mc.snakenest.launcher.util.Throwables.stackTraceOf(e),
                         () -> showModpackDetail(frame, section, modpack),
-                        back)));
+                        back, offlineAction())));
             }
         });
     }
@@ -956,73 +1222,41 @@ final class LauncherApp {
     private volatile ModpackDetailPage currentDetailPage;
 
     /**
-     * Applies whichever activity {@link #active} says is genuinely happening to {@code slug}
-     * right now to a freshly built {@code ModpackDetailPage} - called every time one is built
-     * ({@code showModpackDetail}, on open/refresh/reopen), covering installing/running/stopping
-     * the same way instead of a separate check per activity.
+     * Applies whichever activity {@code instanceStates} says is genuinely happening to
+     * {@code slug} right now to a freshly built {@code ModpackDetailPage} - called every time one
+     * is built ({@code showModpackDetail}, on open/refresh/reopen), covering
+     * installing/running/stopping the same way instead of a separate check per activity.
      */
     private void restoreActiveState(String slug, ModpackDetailPage detail) {
-        ActiveModpack current = active;
-        if (current == null || !current.slug().equals(slug)) {
-            return;
-        }
-        switch (current.activity()) {
-            case INSTALLING -> detail.setBusy(true);
-            case RUNNING -> detail.setRunning(true);
-            case STOPPING -> {
-                detail.setRunning(true);
-                detail.setStopping(true);
+        instanceStates.get(slug).ifPresent(state -> {
+            switch (state.activity()) {
+                case INSTALLING -> detail.setBusy(true);
+                case RUNNING -> detail.setRunning(true);
+                case STOPPING -> {
+                    detail.setRunning(true);
+                    detail.setStopping(true);
+                }
             }
-        }
+        });
     }
 
-    /** Same as {@link #restoreActiveState}, for a freshly built {@code ModpackListPage}'s cards. */
+    /**
+     * Same as {@link #restoreActiveState}, for a freshly built {@code ModpackListPage}'s cards -
+     * every modpack in the list is checked, not just one, since several can genuinely be active at
+     * once (installing one while another's game is running).
+     */
     private void restoreActiveCardState(ModpackListViewModel viewModel) {
-        ActiveModpack current = active;
-        if (current == null) {
-            return;
-        }
-        switch (current.activity()) {
-            case INSTALLING -> viewModel.setCardBusy(current.slug(), true);
-            case RUNNING -> viewModel.setCardRunning(current.slug(), true);
-            case STOPPING -> {
-                viewModel.setCardRunning(current.slug(), true);
-                viewModel.setCardStopping(current.slug(), true);
-            }
-        }
-    }
-
-    /**
-     * Clears {@link #active} back to {@code null}, but only if it's still the {@code INSTALLING}
-     * episode for {@code slug} - a no-op if it already moved on to {@code RUNNING} (a successful
-     * install immediately followed by launching the game) or was never this slug's to begin with.
-     * Called wherever an install/repair ends without ever reaching {@link #launchGame} (cancelled
-     * or failed) - the success-into-launch path clears nothing here since {@link #launchGame}
-     * already replaced {@link #active} with the {@code RUNNING} snapshot by the time this would run.
-     */
-    private void clearActiveIfInstalling(String slug) {
-        ActiveModpack current = active;
-        if (current != null && current.activity() == Activity.INSTALLING && current.slug().equals(slug)) {
-            active = null;
-        }
-    }
-
-    /**
-     * Fills in {@code task} on the just-created {@code INSTALLING} snapshot for {@code slug} -
-     * called right after {@code backgroundExecutor.submit(...)} returns, not before, since the
-     * {@link java.util.concurrent.Future} doesn't exist until then. {@link #active} is still set
-     * to {@code INSTALLING} (with a {@code null} task) *before* submitting, not after - if it were
-     * set only after, the background task itself could in theory already have run far enough to
-     * move {@link #active} on to {@code RUNNING} (or clear it, on a very fast failure) by the time
-     * the submitting thread got back around to writing it, and that stale write would silently
-     * clobber the newer, correct state. Guarded here the same way, so attaching the task can never
-     * do that either: a no-op unless {@link #active} is still exactly the bare snapshot this method
-     * is trying to complete.
-     */
-    private void attachInstallTask(String slug, java.util.concurrent.Future<?> task) {
-        ActiveModpack current = active;
-        if (current != null && current.activity() == Activity.INSTALLING && current.slug().equals(slug) && current.installTask() == null) {
-            active = new ActiveModpack(slug, Activity.INSTALLING, task, null);
+        for (ModpackSummary modpack : viewModel.modpacks()) {
+            instanceStates.get(modpack.slug()).ifPresent(state -> {
+                switch (state.activity()) {
+                    case INSTALLING -> viewModel.setCardBusy(state.slug(), true);
+                    case RUNNING -> viewModel.setCardRunning(state.slug(), true);
+                    case STOPPING -> {
+                        viewModel.setCardRunning(state.slug(), true);
+                        viewModel.setCardStopping(state.slug(), true);
+                    }
+                }
+            });
         }
     }
 
@@ -1044,9 +1278,14 @@ final class LauncherApp {
     }
 
     private void installAndLaunch(ModpackSummary modpack, ModpackManifest manifest) {
+        // False means this slug already has an activity in flight - the button that triggered
+        // this shouldn't have been clickable in that state, so this is defense in depth rather
+        // than an expected path, and a silent no-op is the right response to it either way.
+        if (!instanceStates.beginInstalling(modpack.slug())) {
+            return;
+        }
         withDetailPage(modpack.slug(), page -> page.setBusy(true));
         setCardBusy(modpack.slug(), true);
-        active = new ActiveModpack(modpack.slug(), Activity.INSTALLING, null, null);
 
         java.util.concurrent.Future<?> task = backgroundExecutor.submit(() -> {
             try {
@@ -1056,27 +1295,32 @@ final class LauncherApp {
                 setCardBusy(modpack.slug(), false);
             }
         });
-        attachInstallTask(modpack.slug(), task);
+        instanceStates.attachInstallTask(modpack.slug(), task);
     }
 
     /**
      * Same action as the card's play/download icon in the list, without opening the detail page
      * first - submitted (not fire-and-forget) so the card's icon can switch to "Annuler" and
-     * {@link #cancelInstall()} actually has something to cancel, the same as a detail-page-started
+     * {@link #cancelInstall} actually has something to cancel, the same as a detail-page-started
      * install.
      */
     private void quickInstallAndLaunch(ModpackSummary modpack) {
+        if (!instanceStates.beginInstalling(modpack.slug())) {
+            return;
+        }
         setCardBusy(modpack.slug(), true);
-        active = new ActiveModpack(modpack.slug(), Activity.INSTALLING, null, null);
         java.util.concurrent.Future<?> task = backgroundExecutor.submit(() -> {
             try {
-                ModpackManifest manifest = modpackApi.getManifest(modpack.slug(), null, session);
+                String channel = modpackSettingsStore.load(modpack.slug(), ModpackSettings.defaults()).channel();
+                ModpackManifest manifest = localOnly(modpack.slug()) ? localManifest(modpack.slug())
+                        : modpackApi.getManifest(modpack.slug(), null, channel, session);
                 doInstallAndLaunch(modpack, manifest);
             } catch (Exception e) {
                 // Covers a failure in the getManifest() call above too, not just doInstallAndLaunch
-                // - that one already clears active itself when it's the one that fails/cancels,
-                // this is a harmless no-op in that case (already cleared, or moved on to RUNNING).
-                clearActiveIfInstalling(modpack.slug());
+                // - that one already clears this slug's state itself when it's the one that
+                // fails/cancels, this is a harmless no-op in that case (already cleared, or moved
+                // on to RUNNING).
+                instanceStates.clearIfInstalling(modpack.slug());
                 if (isCancellation(e)) {
                     Log.warn(LauncherApp.class, "Quick install/launch cancelled for " + modpack.slug());
                 } else {
@@ -1087,7 +1331,7 @@ final class LauncherApp {
                 setCardBusy(modpack.slug(), false);
             }
         });
-        attachInstallTask(modpack.slug(), task);
+        instanceStates.attachInstallTask(modpack.slug(), task);
     }
 
     /** No-op if the given slug's card isn't in the currently-shown list (e.g. it was refreshed away, or its detail page is the only thing open). */
@@ -1130,19 +1374,16 @@ final class LauncherApp {
         }
     }
 
-    /** Interrupts whichever sync/install/repair task is currently running for the open detail page - the "Annuler" button. */
-    private void cancelInstall() {
-        ActiveModpack current = active;
-        if (current != null && current.activity() == Activity.INSTALLING && current.installTask() != null) {
-            current.installTask().cancel(true);
-        }
+    /** Interrupts {@code slug}'s sync/install/repair task, if one is running - the "Annuler" button. */
+    private void cancelInstall(String slug) {
+        instanceStates.cancelInstalling(slug);
     }
 
     private static final int FORCE_KILL_TIMEOUT_SECONDS = 10;
 
     /**
-     * Asks the running game process to exit - the "Arreter" button. {@code destroy()} (SIGTERM on
-     * Linux/macOS) asks the JVM to shut down but doesn't guarantee it will - a native
+     * Asks {@code slug}'s running game process to exit - the "Arreter" button. {@code destroy()}
+     * (SIGTERM on Linux/macOS) asks the JVM to shut down but doesn't guarantee it will - a native
      * graphics/mod cleanup hang on shutdown leaves the process alive with no visible feedback.
      * Immediately flips the button to "Tuer" ({@link #killGame}, a manual force-kill the user can
      * click right away rather than waiting) and, as a backstop in case they don't notice/click
@@ -1150,40 +1391,33 @@ final class LauncherApp {
      * still hasn't exited by then - off the EDT (this runs from the button's action listener)
      * since {@code waitFor} blocks.
      */
-    private void stopGame() {
-        ActiveModpack current = active;
-        if (current == null || current.activity() != Activity.RUNNING) {
-            return;
-        }
-        Process process = current.gameProcess();
-        active = new ActiveModpack(current.slug(), Activity.STOPPING, null, process);
-        withDetailPage(current.slug(), page -> page.setStopping(true));
-        setCardStopping(current.slug(), true);
-        process.destroy();
-        backgroundExecutor.execute(() -> {
-            try {
-                if (!process.waitFor(FORCE_KILL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS) && process.isAlive()) {
-                    Log.warn(LauncherApp.class, "Game process ignored destroy() for " + FORCE_KILL_TIMEOUT_SECONDS + "s, forcing kill");
-                    process.destroyForcibly();
+    private void stopGame(String slug) {
+        instanceStates.beginStopping(slug).ifPresent(process -> {
+            withDetailPage(slug, page -> page.setStopping(true));
+            setCardStopping(slug, true);
+            process.destroy();
+            backgroundExecutor.execute(() -> {
+                try {
+                    if (!process.waitFor(FORCE_KILL_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS) && process.isAlive()) {
+                        Log.warn(LauncherApp.class, "Game process ignored destroy() for " + FORCE_KILL_TIMEOUT_SECONDS + "s, forcing kill");
+                        process.destroyForcibly();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+            });
         });
     }
 
     /**
-     * Force-kills the running game process outright - the "Tuer" button, shown after "Arreter"
-     * has already been clicked once ({@link #stopGame}). {@code destroyForcibly()} is SIGKILL on
-     * Linux/macOS: unconditional, no cooperation required from the target process, so there's
-     * nothing to wait for or escalate here unlike {@link #stopGame} - verified against a real
-     * process that traps and ignores {@code SIGTERM} (what plain {@code destroy()} sends).
+     * Force-kills {@code slug}'s running game process outright - the "Tuer" button, shown after
+     * "Arreter" has already been clicked once ({@link #stopGame}). {@code destroyForcibly()} is
+     * SIGKILL on Linux/macOS: unconditional, no cooperation required from the target process, so
+     * there's nothing to wait for or escalate here unlike {@link #stopGame} - verified against a
+     * real process that traps and ignores {@code SIGTERM} (what plain {@code destroy()} sends).
      */
-    private void killGame() {
-        ActiveModpack current = active;
-        if (current != null && current.gameProcess() != null) {
-            current.gameProcess().destroyForcibly();
-        }
+    private void killGame(String slug) {
+        instanceStates.processFor(slug).ifPresent(Process::destroyForcibly);
     }
 
     /** Whether the currently open detail page (if any) is showing {@code slug} right now - see {@link #withDetailPage}. */
@@ -1200,21 +1434,28 @@ final class LauncherApp {
      */
     private void doInstallAndLaunch(ModpackSummary modpack, ModpackManifest manifest) {
         try {
-            syncModpackFiles(modpack, manifest);
-            installGame(modpack, manifest);
+            boolean localOnly = localOnly(modpack.slug());
+            if (!localOnly) {
+                syncModpackFiles(modpack, manifest);
+                installGame(modpack, manifest);
+                localCatalog.rememberSummary(modpack);
+                localCatalog.saveManifest(modpack.slug(), manifest);
+            }
             withDetailPage(modpack.slug(), page -> {
                 page.setInstalled(true);
                 page.setUpdateAvailable(false);
             });
             setCardInstalled(modpack.slug(), true);
             setCardUpdateAvailable(modpack.slug(), false);
-            String username = authApi.fetchUsername(session);
+            String username = localOnly ? localUsername() : authApi.fetchUsername(session);
+            if (!localOnly) localCatalog.cacheUsername(session.playerId(), username);
             warnIfUsernameChanged(modpack.slug(), username);
-            launchGame(modpack, manifest, username);
+            launchGame(modpack, manifest, username, localOnly);
         } catch (Exception e) {
             // Only actually clears anything if we didn't reach launchGame above - that already
-            // moved active on to RUNNING, so this is a no-op in that case (see its Javadoc).
-            clearActiveIfInstalling(modpack.slug());
+            // moved this slug's state on to RUNNING, so this is a no-op in that case (see
+            // InstanceStateRegistry#clearIfInstalling's Javadoc).
+            instanceStates.clearIfInstalling(modpack.slug());
             if (isCancellation(e)) {
                 Log.warn(LauncherApp.class, "Install/launch cancelled for " + modpack.slug());
                 withDetailPage(modpack.slug(), page -> {
@@ -1235,27 +1476,64 @@ final class LauncherApp {
         }
     }
 
-    /** True if {@code e} (or the fact the thread is now interrupted) means "cancelled", not "actually failed". */
+    /**
+     * True if {@code e} (or the fact the thread is now interrupted) means "cancelled", not
+     * "actually failed" - e.g. clicking "Annuler" during the mod loader install step used to
+     * surface as a scary red "Could not install ..." error instead of the intended quiet
+     * "Annulé.": {@code FlowUpdaterGameInstallService#install} wraps every failure (including a
+     * real {@link InterruptedException} from the cancelled {@code Future}) into one
+     * {@code GameInstallException}, and FlowUpdater's own internal I/O layer can turn an
+     * interrupt into an {@link java.io.InterruptedIOException} without restoring the thread's
+     * interrupted flag - so neither the top-level exception type nor
+     * {@code Thread.currentThread().isInterrupted()} alone catches it; this walks the whole
+     * cause chain for any of the usual "this was actually a deliberate interruption" markers.
+     */
     private boolean isCancellation(Exception e) {
-        return Thread.currentThread().isInterrupted() || e instanceof InterruptedException;
+        if (Thread.currentThread().isInterrupted()) {
+            return true;
+        }
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof InterruptedException
+                    || cause instanceof java.io.InterruptedIOException
+                    || cause instanceof java.nio.channels.ClosedByInterruptException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void showErrorDialog(ModpackSummary modpack, Exception e) {
-        SwingUtilities.invokeLater(() -> javax.swing.JOptionPane.showMessageDialog(shellFrame,
-                "Impossible d'installer/lancer \"" + modpack.name() + "\" : " + e.getMessage(),
-                "Erreur", javax.swing.JOptionPane.ERROR_MESSAGE));
+        SwingUtilities.invokeLater(() -> {
+            String message = "Impossible d’installer/lancer « " + modpack.name() + " » : " + e.getMessage();
+            if (offlineAction() != null && !offlineMode) {
+                int choice = javax.swing.JOptionPane.showOptionDialog(shellFrame, message, "Erreur",
+                        javax.swing.JOptionPane.DEFAULT_OPTION, javax.swing.JOptionPane.ERROR_MESSAGE, null,
+                        new String[]{"Mode hors connexion", "Fermer"}, "Mode hors connexion");
+                if (choice == 0) enterOfflineMode();
+            } else javax.swing.JOptionPane.showMessageDialog(shellFrame, message, "Erreur", javax.swing.JOptionPane.ERROR_MESSAGE);
+        });
     }
 
     /** Clears the locally-recorded manifest so the next sync re-verifies/re-downloads everything, then re-installs (no launch). */
     private void repairModpack(ModpackSummary modpack, ModpackManifest manifest) {
+        if (localOnly(modpack.slug())) return;
+        // Asked before anything starts, and on the EDT: a repair re-downloads the pack, and the
+        // only genuinely destructive part of that is the player's own files. Answered "no" by
+        // default - see askWhetherToResetPlayerFiles.
+        boolean resetPlayerFiles = askWhetherToResetPlayerFiles(modpack);
+
+        if (!instanceStates.beginInstalling(modpack.slug())) {
+            return;
+        }
         withDetailPage(modpack.slug(), page -> page.setBusy(true));
         setCardBusy(modpack.slug(), true);
-        active = new ActiveModpack(modpack.slug(), Activity.INSTALLING, null, null);
         java.util.concurrent.Future<?> task = backgroundExecutor.submit(() -> {
             try {
                 new LocalManifestStore().clear(dirs.instance(modpack.slug()));
-                syncModpackFiles(modpack, manifest);
+                syncModpackFiles(modpack, manifest, resetPlayerFiles);
                 installGame(modpack, manifest);
+                localCatalog.rememberSummary(modpack);
+                localCatalog.saveManifest(modpack.slug(), manifest);
                 withDetailPage(modpack.slug(), page -> {
                     page.setInstalled(true);
                     page.setUpdateAvailable(false);
@@ -1280,14 +1558,14 @@ final class LauncherApp {
                 }
             } finally {
                 // Repair never launches the game, so unlike doInstallAndLaunch's clear this one
-                // is unconditional (still guarded by clearActiveIfInstalling itself) - there's no
+                // is unconditional (still guarded by clearIfInstalling itself) - there's no
                 // RUNNING transition here to avoid clobbering.
-                clearActiveIfInstalling(modpack.slug());
+                instanceStates.clearIfInstalling(modpack.slug());
                 withDetailPage(modpack.slug(), page -> page.setBusy(false));
                 setCardBusy(modpack.slug(), false);
             }
         });
-        attachInstallTask(modpack.slug(), task);
+        instanceStates.attachInstallTask(modpack.slug(), task);
     }
 
     /** Deletes the instance directory entirely - the confirmation dialog already happened in the UI. */
@@ -1295,6 +1573,7 @@ final class LauncherApp {
         backgroundExecutor.execute(() -> {
             try {
                 deleteRecursively(dirs.instance(modpack.slug()));
+                localCatalog.removeInstalled(modpack.slug());
                 withDetailPage(modpack.slug(), page -> {
                     page.setInstalled(false);
                     page.setStatus("Désinstallé.");
@@ -1359,7 +1638,65 @@ final class LauncherApp {
         withDetailPage(slug, page -> page.setStatus(message));
     }
 
+    /**
+     * Asks whether a repair should also restore the files the pack marked as the player's -
+     * {@code DEFAULT}/{@code MERGE} in {@code .filesmetas}, plus the two paths protected by
+     * default. Returns false without asking anything when the instance holds none of them.
+     *
+     * <p>The rules are read from the copy already in the instance rather than fetched: the
+     * question is about files sitting on this disk right now, and it must not wait on the network.
+     * The affected paths are listed in the prompt, because "réinitialiser mes réglages" means
+     * nothing until a player sees that it includes their server list.
+     */
+    private boolean askWhetherToResetPlayerFiles(ModpackSummary modpack) {
+        Path instanceDir = dirs.instance(modpack.slug());
+        java.util.List<String> present = new java.util.ArrayList<>();
+
+        try {
+            Path metasFile = instanceDir.resolve(FileMetas.FILE_NAME);
+            FileMetas metas = Files.isRegularFile(metasFile)
+                    ? FileMetas.parse(Files.readString(metasFile, java.nio.charset.StandardCharsets.UTF_8))
+                    : FileMetas.empty();
+
+            for (String path : ManifestDiffer.playerOwnedPaths(metas)) {
+                if (Files.exists(instanceDir.resolve(path))) {
+                    present.add(path);
+                }
+            }
+        } catch (Exception e) {
+            // Unreadable rules must not block a repair; the safe answer is simply "don't reset".
+            Log.warn(LauncherApp.class, "Could not list player-owned files for " + modpack.slug() + ": " + e.getMessage());
+            return false;
+        }
+
+        if (present.isEmpty()) {
+            return false;
+        }
+
+        Object[] options = {"Garder mes fichiers", "Tout réinitialiser"};
+        int choice = javax.swing.JOptionPane.showOptionDialog(shellFrame,
+                "La réparation va retélécharger les fichiers du modpack.\n\n"
+                        + "Ces fichiers t'appartiennent et seront conservés :\n"
+                        + "  • " + String.join("\n  • ", present) + "\n\n"
+                        + "Veux-tu aussi les remettre à leur version d'origine ?\n"
+                        + "Tes réglages et ta liste de serveurs seraient alors perdus.",
+                "Réparer " + modpack.name(),
+                javax.swing.JOptionPane.YES_NO_OPTION,
+                javax.swing.JOptionPane.QUESTION_MESSAGE,
+                null, options, options[0]);
+
+        return choice == 1;
+    }
+
     private void syncModpackFiles(ModpackSummary modpack, ModpackManifest manifest) throws Exception {
+        syncModpackFiles(modpack, manifest, false);
+    }
+
+    /**
+     * @param resetPlayerFiles also restore the files the pack marked DEFAULT/MERGE - only ever true
+     *                         when the player answered yes to the repair prompt
+     */
+    private void syncModpackFiles(ModpackSummary modpack, ModpackManifest manifest, boolean resetPlayerFiles) throws Exception {
         withDetailPage(modpack.slug(), page -> {
             page.setStatus("Synchronisation des fichiers...");
             page.setProgress(0);
@@ -1370,7 +1707,17 @@ final class LauncherApp {
         syncEngine.sync(modpack.slug(), dirs.instance(modpack.slug()), manifest, session, new mc.snakenest.launcher.modpack.SyncProgressListener() {
             @Override
             public void onFileStarted(String path, long size) {
-                withDetailPage(modpack.slug(), page -> page.setStatus("Téléchargement : " + path));
+                withDetailPage(modpack.slug(), page -> page.setStatus("Application : " + path));
+            }
+
+            @Override
+            public void onDownloadProgress(long receivedBytes, long totalBytes) {
+                withDetailPage(modpack.slug(), page -> {
+                    page.setProgress(totalBytes > 0 ? 0.99 * Math.min(1.0, (double) receivedBytes / totalBytes) : 0);
+                    page.setStatus("Téléchargement du modpack : "
+                            + mc.snakenest.launcher.util.HumanSize.format(receivedBytes) + " / "
+                            + mc.snakenest.launcher.util.HumanSize.format(totalBytes));
+                });
             }
 
             @Override
@@ -1380,11 +1727,12 @@ final class LauncherApp {
             @Override
             public void onDeleted(String path) {
             }
-        });
+        }, resetPlayerFiles);
+        withDetailPage(modpack.slug(), page -> page.setProgress(1));
     }
 
     private void installGame(ModpackSummary modpack, ModpackManifest manifest) throws Exception {
-        withDetailPage(modpack.slug(), page -> page.setStatus("Installation du jeu..."));
+        withDetailPage(modpack.slug(), page -> { page.setStatus("Installation du jeu..."); page.setProgress(0); });
         Path instanceDir = dirs.instance(modpack.slug());
         AssetStorageMode assetStorageMode = configStore.load().assetStorageMode();
 
@@ -1421,9 +1769,15 @@ final class LauncherApp {
     }
 
     private void launchGame(ModpackSummary modpack, ModpackManifest manifest, String username) throws Exception {
+        launchGame(modpack, manifest, username, false);
+    }
+
+    private void launchGame(ModpackSummary modpack, ModpackManifest manifest, String username, boolean localOnly) throws Exception {
         ModpackSettings settings = modpackSettingsStore.load(modpack.slug(),
                 ModpackSettings.defaults(manifest.defaultMemoryMb(), manifest.defaultJvmArgs()));
         Path instanceDir = dirs.instance(modpack.slug());
+
+        checkModBlacklist(modpack, instanceDir, localOnly);
 
         // The game can't read its own .cryptlist files while they're encrypted, so the plaintext
         // window is opened here and closed again in onExit below - see SensitiveFileVault. No-op
@@ -1442,11 +1796,22 @@ final class LauncherApp {
                 manifest.loaderVersion(),
                 settings.memoryMb(),
                 settings.extraJvmArgs(),
-                session.key().seedHex()
+                // This modpack's own choice if it has one, otherwise the launcher-wide default,
+                // otherwise null for the launcher's own JVM - see JavaRuntimes.
+                JavaRuntimes.resolve(settings.javaPath(), configStore.load().defaultJavaPath()),
+                session.key().seedHex(),
+                localOnly
         );
-        Process process = gameLaunchService.launch(request);
+        Process process;
+        try { process = gameLaunchService.launch(request); }
+        catch (Exception failure) {
+            if (key != null) try { SensitiveFileVault.encryptAll(instanceDir, key); }
+            catch (Exception sealFailure) { failure.addSuppressed(sealFailure); }
+            throw failure;
+        }
         java.time.Instant launchedAt = java.time.Instant.now();
-        active = new ActiveModpack(modpack.slug(), Activity.RUNNING, null, process);
+        instanceStates.transitionToRunning(modpack.slug(), process);
+        applyLaunchWindowActionOnLaunch();
         withDetailPage(modpack.slug(), page -> page.setRunning(true));
         setCardRunning(modpack.slug(), true);
         if (discordPresence != null) {
@@ -1460,14 +1825,14 @@ final class LauncherApp {
                 SensitiveFileVault.encryptAll(instanceDir, exitKey);
             }
 
-            ActiveModpack current = active;
             // STOPPING means the player clicked "Arreter"/"Tuer" (see stopGame/killGame) -
             // destroy()/destroyForcibly() also produce a non-zero exit that looks like a crash
             // from the outside, so this is what tells the two apart without a dedicated flag.
-            boolean playerRequestedStop = current != null && current.activity() == Activity.STOPPING;
-            if (current != null && current.gameProcess() == process) {
-                active = null;
-            }
+            boolean playerRequestedStop = instanceStates.get(modpack.slug())
+                    .map(state -> state.activity() == InstanceActivity.STOPPING)
+                    .orElse(false);
+            instanceStates.clearIfProcessMatches(modpack.slug(), process);
+            settleWindowAfterInstanceExit();
             // withDetailPage, not a closed-over detailPage parameter: the game can easily still
             // be running minutes after launch, long enough for the user to refresh/leave-and-
             // reopen this modpack's page in the meantime (a brand new ModpackDetailPage instance
@@ -1478,8 +1843,128 @@ final class LauncherApp {
             if (discordPresence != null) {
                 discordPresence.setBrowsing();
             }
-            if (!playerRequestedStop) {
+            if (!localOnly && !playerRequestedStop) {
                 promptGameCrashReport(modpack, instanceDir, process, launchedAt);
+            }
+        });
+    }
+
+    /**
+     * Refuses to let the game start if a file under {@code mods/} matches a blacklisted hash (see
+     * {@link ModBlacklistEntry}, {@code Api\ModpackBlacklistController} on the site) - global
+     * entries and this modpack's own are already merged server-side. Identification is always by
+     * hash, never filename (see the entry's own docblock - a rename doesn't help).
+     *
+     * <p>Tries a fresh fetch first; if the site can't be reached right now, falls back to the last
+     * successfully-fetched list for this instance ({@link ModBlacklistCacheStore}) rather than
+     * either blocking every launch on a network hiccup or skipping the check entirely. If there's
+     * no cache yet either (e.g. the very first launch, offline), the check has nothing to compare
+     * against and lets the launch through - an honest, disclosed gap, not a silent one.
+     */
+    private void checkModBlacklist(ModpackSummary modpack, Path instanceDir) throws Exception {
+        checkModBlacklist(modpack, instanceDir, false);
+    }
+
+    private void checkModBlacklist(ModpackSummary modpack, Path instanceDir, boolean localOnly) throws Exception {
+        List<ModBlacklistEntry> entries;
+        try {
+            if (localOnly) entries = modBlacklistCache.load(instanceDir).orElse(List.of());
+            else {
+            entries = modpackApi.getBlacklist(modpack.slug(), session);
+            modBlacklistCache.save(instanceDir, entries);
+            }
+        } catch (Exception e) {
+            Log.warn(LauncherApp.class, "Could not fetch the mod blacklist for " + modpack.slug()
+                    + ", falling back to the local cache: " + e.getMessage());
+            entries = modBlacklistCache.load(instanceDir).orElse(List.of());
+        }
+
+        if (entries.isEmpty()) {
+            return;
+        }
+
+        Map<String, ModBlacklistEntry> byHash = new java.util.HashMap<>();
+        for (ModBlacklistEntry entry : entries) {
+            byHash.put(entry.hash(), entry);
+        }
+
+        Path modsDir = instanceDir.resolve("mods");
+        if (!Files.isDirectory(modsDir)) {
+            return;
+        }
+
+        List<String> blocked = new ArrayList<>();
+        try (var files = Files.list(modsDir)) {
+            for (Path file : (Iterable<Path>) files::iterator) {
+                if (!Files.isRegularFile(file)) {
+                    continue;
+                }
+                String hash;
+                try (var in = Files.newInputStream(file)) {
+                    hash = Sha256.hex(in);
+                }
+                ModBlacklistEntry match = byHash.get(hash);
+                if (match != null) {
+                    blocked.add(file.getFileName() + " (" + (match.reason() != null ? match.reason() : "interdit") + ")");
+                }
+            }
+        }
+
+        if (!blocked.isEmpty()) {
+            throw new ModBlacklistedException("Mod(s) interdit(s) détecté(s) : " + String.join(", ", blocked)
+                    + ". Retire-le(s) via \"Gérer les mods\" avant de relancer.");
+        }
+    }
+
+    /**
+     * Applies the "Action au lancement" setting (see {@link LaunchWindowAction}) right after a game
+     * starts: {@code STAY_OPEN} does nothing, the other two both hide the window immediately - the
+     * difference between them (re-show vs. actually quit) only plays out later, in
+     * {@link #settleWindowAfterInstanceExit}, once every running modpack has exited. Hiding here
+     * rather than deciding close-vs-not up front is what keeps a second modpack launched while this
+     * one is still running from prematurely closing the launcher.
+     */
+    private void applyLaunchWindowActionOnLaunch() {
+        LaunchWindowAction action = configStore.load().launchWindowAction();
+        if (action == LaunchWindowAction.STAY_OPEN) {
+            return;
+        }
+        SwingUtilities.invokeLater(() -> {
+            if (shellFrame != null) {
+                shellFrame.setVisible(false);
+            }
+        });
+    }
+
+    /**
+     * Called after every game process exit, once {@code instanceStates} has already been updated
+     * for it. Only actually re-shows or closes the window once {@link InstanceStateRegistry#isAnyActive()}
+     * is false - i.e. every modpack this launcher knows about (installing or running) has finished -
+     * never on the first of several to exit while another is still going. This is the only
+     * interpretation that can't kill/hide-forever a modpack that's still running just because a
+     * different one launched alongside it just finished.
+     */
+    private void settleWindowAfterInstanceExit() {
+        LaunchWindowAction action = configStore.load().launchWindowAction();
+        if (action == LaunchWindowAction.STAY_OPEN || instanceStates.isAnyActive()) {
+            return;
+        }
+        SwingUtilities.invokeLater(() -> {
+            if (action == LaunchWindowAction.HIDE_AND_RESHOW) {
+                if (shellFrame != null) {
+                    shellFrame.setVisible(true);
+                    forceToFront(shellFrame);
+                }
+            } else if (action == LaunchWindowAction.CLOSE_ON_LAUNCH) {
+                if (shellFrame != null) {
+                    shellFrame.dispose();
+                    shellFrame = null;
+                }
+                // dispose() alone doesn't reliably terminate the JVM (EXIT_ON_CLOSE only fires for a
+                // real WINDOW_CLOSING event, and other subsystems - HTTP clients, Discord RPC - may
+                // keep non-daemon threads alive) - an explicit exit is unambiguous. The existing
+                // shutdown hook (see the constructor) still runs normally, Discord RPC included.
+                System.exit(0);
             }
         });
     }
@@ -1565,7 +2050,7 @@ final class LauncherApp {
         // leave a key that leaked before this point (e.g. copied off disk) valid forever
         // server-side, even after the legitimate user logs out.
         PlayerSession sessionToRevoke = session;
-        if (sessionToRevoke != null) {
+        if (sessionToRevoke != null && !offlineMode) {
             backgroundExecutor.execute(() -> {
                 try {
                     authApi.revokeKey(sessionToRevoke);
@@ -1591,19 +2076,8 @@ final class LauncherApp {
         showLogin();
     }
 
-    /**
-     * Local-only cleanup for a stored key the server no longer recognizes (a 401/403 on the
-     * startup player-info fetch - see {@link #start()}). Unlike {@link #logout()}, never attempts
-     * a server-side revoke: the server already doesn't recognize this key, which is exactly why
-     * it's being forgotten, so there's nothing to revoke. Runs before any window is shown, so
-     * there's no {@code shellFrame} to dispose either.
-     */
-    private void forgetInvalidSession() {
-        keyStorage.delete();
-        var config = configStore.load();
-        config.setPlayerId(null);
-        configStore.save(config);
-
+    /** Suspend only the in-memory session; preserve the device key and player id for retry. */
+    private void suspendRejectedSession() {
         session = null;
         playerInfo = null;
         playerAvatar = null;

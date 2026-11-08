@@ -13,7 +13,7 @@
     <artifactId>bootstrap</artifactId>
     <!-- The tiny stub players actually run. Rarely changes, so this version rarely moves,
          independently of the launcher's. See VERSIONING.md. -->
-    <version>2.0.0</version>
+    <version>2.4.1</version>
     <packaging>jar</packaging>
 
     <!--

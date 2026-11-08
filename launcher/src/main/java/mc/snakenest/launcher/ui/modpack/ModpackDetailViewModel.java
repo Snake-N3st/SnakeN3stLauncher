@@ -1,9 +1,12 @@
 package mc.snakenest.launcher.ui.modpack;
 
+import mc.snakenest.launcher.auth.ChannelInfo;
 import mc.snakenest.launcher.modpack.ModpackSettings;
 
 import java.awt.image.BufferedImage;
+import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * Data + callbacks for {@link ModpackDetailPage}. Holds no logic of its own.
@@ -36,6 +39,9 @@ import java.util.function.Consumer;
  * @param onRepair  clears the locally-recorded manifest and re-syncs+installs
  *                  from scratch (without launching) - for a corrupted/partial
  *                  install.
+ * @param onManageMods opens {@code ModManagerDialog} - only enabled when {@code installed}, same
+ *                  as {@code onRepair}/{@code onUninstall}, since there's no {@code mods/} folder
+ *                  to manage before the modpack has ever been installed.
  * @param onUninstall deletes the instance directory entirely.
  * @param onCancel  interrupts an in-progress sync/install - the main button
  *                  reads "Annuler" while {@link ModpackDetailPage#setBusy}
@@ -50,6 +56,12 @@ import java.util.function.Consumer;
  *                  terminate a hung process).
  * @param onSaveSettings called with the new {@link ModpackSettings} when the
  *                       "Gerer" dialog is confirmed.
+ * @param availableChannels the distribution channels the "Gerer" dialog's channel picker offers -
+ *                  a {@link Supplier} (not a plain list) since {@code LauncherApp} fetches it
+ *                  once, asynchronously, at startup (shared with {@code ui.settings.SettingsPage}'s
+ *                  own picker) and this page is often built before that fetch resolves; reading
+ *                  through the supplier at dialog-open time (rather than baking in whatever list
+ *                  existed when this record was built) picks up the real list once it's in.
  */
 public record ModpackDetailViewModel(
         String slug,
@@ -65,12 +77,14 @@ public record ModpackDetailViewModel(
         ModpackSettings settings,
         Runnable onDemarrer,
         Runnable onRepair,
+        Runnable onManageMods,
         Runnable onUninstall,
         Runnable onCancel,
         Runnable onStop,
         Runnable onKill,
         Consumer<ModpackSettings> onSaveSettings,
         Runnable onOpenFolder,
-        Runnable onBack
+        Runnable onBack,
+        Supplier<List<ChannelInfo>> availableChannels
 ) {
 }

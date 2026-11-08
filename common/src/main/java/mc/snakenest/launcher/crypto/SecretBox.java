@@ -17,7 +17,7 @@ import java.util.Arrays;
  * <p>GCM is authenticated encryption, which is also what makes "was that the right PIN?"
  * answerable at all: {@link #decrypt} throws on a wrong key because the tag doesn't verify, so
  * no separate password-verifier file (an extra thing to keep in sync, and an extra oracle) is
- * needed - see {@link PinProtection}.
+ * needed - see {@code launcher.crypto.PinProtection} (a different module, not linkable from here).
  */
 public final class SecretBox {
 

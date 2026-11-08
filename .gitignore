@@ -23,3 +23,6 @@ dependency-reduced-pom.xml
 /bootstrap.properties
 /tools/
 /tools/*
+
+# makensis build output - rebuilt from windows-installer/installer.nsi, not committed.
+/windows-installer/*.exe

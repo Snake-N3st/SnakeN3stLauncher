@@ -19,6 +19,14 @@ import java.nio.file.Paths;
  *   <li>Windows: {@code %APPDATA%\snake-n3st}</li>
  * </ul>
  *
+ * <p>The folder name {@code snake-n3st} above is the default <b>app id</b>. The {@code sn3.appId} system
+ * property replaces it (only it: the OS-specific parent stays), so a site can ship a launcher whose data
+ * lives beside, not inside, another site's - typically a test site and the production one installed on the
+ * same machine. The site bakes it into {@code jvm.prop} (see {@code BundledJvmProperties}) from the package
+ * id it is configured with, and only when that id is not the default, so an existing install keeps finding
+ * its data. The value becomes a directory name, so anything that could be a path is refused - see
+ * {@link #resolveAppId}.
+ *
  * <p>The {@code -Dsn3.dataDir=...} JVM system property overrides all of the above with an
  * arbitrary directory, read by both {@code bootstrap} and {@code launcher} (both go through this
  * same class) - mainly to keep a test/dev instance's data (config, keys, cached jars, installed
@@ -26,6 +34,9 @@ import java.nio.file.Paths;
  * interfering with each other.
  */
 public final class AppDirs {
+
+    /** The folder name used when no {@code sn3.appId} is set - and what every pre-existing install uses. */
+    static final String DEFAULT_APP_ID = "snake-n3st";
 
     private final Path root;
 
@@ -40,11 +51,32 @@ public final class AppDirs {
 
     static Path resolveRoot() {
         return resolveRootForTesting(System.getProperty("sn3.dataDir"),
-                System.getProperty("os.name", ""), System.getProperty("user.home"), System.getenv("APPDATA"));
+                System.getProperty("os.name", ""), System.getProperty("user.home"), System.getenv("APPDATA"),
+                System.getProperty("sn3.appId"));
+    }
+
+    /**
+     * The folder name to use for {@code appId}: the value itself if it is a plain name made of lowercase
+     * letters, digits and {@code + . -} (what a Debian package id is), the default otherwise. Anything
+     * else - a path separator, {@code ..}, a blank - must never reach {@code Path.resolve}, where it could
+     * point the launcher's data (keys included) somewhere it was never meant to live.
+     */
+    static String resolveAppId(String appId) {
+        if (appId == null) {
+            return DEFAULT_APP_ID;
+        }
+        // Not trimmed: a stray newline or space is a reason to refuse, not to quietly clean up.
+        return appId.matches("[a-z0-9][a-z0-9+.-]*") ? appId : DEFAULT_APP_ID;
+    }
+
+    /** Same as the five-argument form, with the default app id - kept so existing callers and tests read as before. */
+    static Path resolveRootForTesting(String dataDirOverride, String osName, String home, String windowsAppData) {
+        return resolveRootForTesting(dataDirOverride, osName, home, windowsAppData, null);
     }
 
     /** Package-visible, pure version of {@link #resolveRoot()} - exercised directly by tests. */
-    static Path resolveRootForTesting(String dataDirOverride, String osName, String home, String windowsAppData) {
+    static Path resolveRootForTesting(String dataDirOverride, String osName, String home, String windowsAppData,
+                                      String appId) {
         if (dataDirOverride != null && !dataDirOverride.isBlank()) {
             String dRoot = System.getProperty("sn3.dataRoot","");
             return switch (dRoot) {
@@ -71,19 +103,20 @@ public final class AppDirs {
         }
 
         String os = osName.toLowerCase();
+        String folder = resolveAppId(appId);
 
         if (os.contains("win")) {
             Path base = (windowsAppData != null && !windowsAppData.isBlank())
                     ? Paths.get(windowsAppData)
                     : Paths.get(home, "AppData", "Roaming");
-            return base.resolve("snake-n3st");
+            return base.resolve(folder);
         }
 
         if (os.contains("mac") || os.contains("darwin")) {
-            return Paths.get(home, "Library", "Application Support", "snake-n3st");
+            return Paths.get(home, "Library", "Application Support", folder);
         }
 
-        return Paths.get(home, ".local", "share", "snake-n3st");
+        return Paths.get(home, ".local", "share", folder);
     }
 
     public Path root() {

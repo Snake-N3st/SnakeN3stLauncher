@@ -101,24 +101,28 @@ detail view (install/update progress, description, "Demarrer").
   downloading, which read as the whole button-state system being
   unreliable rather than one specific untracked case.
 
-  Fixed by `LauncherApp#active`: one field (an `ActiveModpack` record - slug
-  + which of `INSTALLING`/`RUNNING`/`STOPPING` + whatever `Future`/`Process`
-  goes with that) replacing four previously-independent fields that could
-  each only describe *part* of "what's happening right now" and had to be
-  kept in sync by hand at every call site - installing had no field at all,
-  which is exactly how this bug happened in the first place. Every method
-  that starts/advances/ends an activity replaces this one reference
-  wholesale (`installAndLaunch`, `launchGame` on install success,
-  `stopGame`, the exit callback, `clearActiveIfInstalling` on
-  failure/cancellation) instead of touching several fields separately -
-  `LauncherApp#restoreActiveState`/`#restoreActiveCardState` are the one
-  place a freshly built page/card reads it back, covering all three
-  activities the same way rather than a bespoke check per state that's easy
-  to forget writing for the next new one. Also closes a subtler race: the
-  activity is recorded *before* the background task is even submitted, not
-  after - otherwise a background task fast enough to finish before that
-  line ran on the caller's thread could have its own (correct, newer) state
-  silently overwritten by the caller's stale write.
+  Fixed by `modpack.InstanceStateRegistry` (see `modpack/README.md`), a
+  per-slug map of what every modpack is currently doing, replacing an
+  earlier `LauncherApp#active` field that could only ever describe *one*
+  modpack at a time - starting an install on a second modpack while a first
+  one was still running used to silently overwrite the only record of the
+  first one, breaking its own "Arreter"/"Annuler" buttons (they read the
+  now-wrong global state and became no-ops) and rendering it idle on any
+  freshly (re)built page/card even though it was genuinely still active.
+  Every method that starts/advances/ends an activity now calls one of the
+  registry's own atomic operations, scoped to that one slug -
+  `LauncherApp#restoreActiveState`/`#restoreActiveCardState` are still the
+  one place a freshly built page/card reads it back (the latter now loops
+  over every modpack in the list, not just one, since several can be active
+  at once), covering all three activities the same way rather than a
+  bespoke check per state that's easy to forget writing for the next new
+  one. Also closes a subtler race the old single-field design only
+  approximated: `beginInstalling`/`attachInstallTask` are genuinely atomic
+  `ConcurrentHashMap` operations, not a read-then-conditionally-write pair
+  on a `volatile` field, so a background task fast enough to finish before
+  the submitting thread got back around to attaching its `Future` can no
+  longer have its own (correct, newer) state silently overwritten by a
+  stale write.
 
   **The same staleness bug existed everywhere else in the install/launch
   chain, not just the exit callback** - the next report was "I had to

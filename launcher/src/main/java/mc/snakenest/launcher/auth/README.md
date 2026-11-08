@@ -5,6 +5,19 @@ grant: the launcher gets a short-lived challenge, the user approves it in
 their browser, the launcher polls until it receives a one-time Ed25519
 private key.
 
+`SignedRequestSigner`/`SignedParams`/`PlayerSession` moved to `common`'s own
+`mc.snakenest.launcher.auth` package (see that module's README) so
+`bootstrap` can reuse the exact same signing recipe for its
+restricted-distribution-channel auth flow, rather than a second
+implementation. Everything else here stays `launcher`-only: `bootstrap`
+implements its own small, independent challenge/poll HTTP calls (see
+`bootstrap.DeviceAuthClient`) instead of depending on
+`LauncherAuthApiClient`/`DeviceAuthService`, which pull in `net.HttpJsonClient`
+and player-info/client-branding methods `bootstrap` has no use for - see
+`bootstrap.LauncherReleaseClient`'s own docblock for why this module avoids
+that dependency (`launcher` embeds GPL-3.0 libraries; `bootstrap` stays
+proprietary and must not combine with them).
+
 - **`LauncherAuthApiClient`** — the endpoints of the `launcher-auth` plugin:
   `requestChallenge`, `pollChallenge`, `loginUrl` (builds the
   `/launcher-login?challenge=...` URL to open), `fetchClientInfo` (the
@@ -38,20 +51,6 @@ private key.
   `email`, nullable `avatar` URL). Same split as `ClientInfo`: this record
   only carries the raw response, `ui.common.RemoteImages` decodes the
   avatar URL into an image.
-
-- **`SignedRequestSigner`** / **`SignedParams`** — the one signing recipe
-  every player-info and modpacks call shares: sign
-  `"{METHOD}:{path}:" + unixTimestamp` (method uppercase, path without its
-  leading slash - the exact path/method about to be requested) with the
-  player's key, send `playerId`/`publicKey`/`timestamp`/`signature` (+
-  `client_id` for modpacks). Centralized here so it's never subtly
-  reimplemented twice. Binding the signature to the exact method+path (see
-  `VerifyLauncherSignature` in the sibling `SnakeN3stLogin` repo) means a
-  signature captured for one endpoint (e.g. from server logs) can never be
-  replayed against a different one; the server also rejects a signature it's
-  already seen once, even for the same endpoint. **Must be recomputed per
-  request** - the server tolerates ±60s skew and won't accept a stale or
-  already-used timestamp/signature, so never cache a `SignedParams`.
 
 - **`PollResult`** — sealed result of one challenge poll: `Pending` (403,
   keep polling), `NotFound` (404, stop - expired or already consumed),

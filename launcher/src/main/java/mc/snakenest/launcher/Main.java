@@ -13,15 +13,18 @@ import mc.snakenest.launcher.game.GameLaunchService;
 import mc.snakenest.launcher.game.flowupdater.FlowUpdaterGameInstallService;
 import mc.snakenest.launcher.game.openlauncherlib.OpenLauncherLibGameLaunchService;
 import mc.snakenest.launcher.modpack.ModpackApiClient;
+import mc.snakenest.launcher.modpack.signing.ModpackManifestVerifier;
+import mc.snakenest.launcher.modpack.signing.ModpackSigningKeys;
+import mc.snakenest.launcher.modpack.signing.ModpackTrustState;
 import mc.snakenest.launcher.news.NewsApiClient;
 import mc.snakenest.launcher.net.HttpJsonClient;
+import mc.snakenest.launcher.net.LogoCache;
 import mc.snakenest.launcher.ui.ThemeController;
 import mc.snakenest.launcher.ui.pin.PinUnlockDialog;
 import mc.snakenest.launcher.util.AppDirs;
 import mc.snakenest.launcher.util.Log;
 
 import javax.crypto.SecretKey;
-import javax.swing.SwingUtilities;
 import java.net.URI;
 
 /**
@@ -67,7 +70,10 @@ public final class Main {
         themeController.applyStartupTheme();
 
         LauncherAuthApiClient authApi = new LauncherAuthApiClient(http, baseUrl);
-        ModpackApiClient modpackApi = new ModpackApiClient(http, baseUrl);
+        // Verifies every manifest against the root key the site baked into the bootstrap (none pinned = nothing checked).
+        ModpackManifestVerifier manifestVerifier = new ModpackManifestVerifier(ModpackSigningKeys.fromSystemProperties(),
+                ModpackTrustState.load(dirs.root().resolve(ModpackTrustState.FILE_NAME)));
+        ModpackApiClient modpackApi = new ModpackApiClient(http, baseUrl, manifestVerifier);
         NewsApiClient newsApi = new NewsApiClient(http, baseUrl);
         // Blocks on the PIN gate first when one is set, so nothing else is even constructed
         // until the token is actually decryptable (or the player has reset it) - see
@@ -94,8 +100,8 @@ public final class Main {
     /**
      * Shows the startup PIN gate when one is set, and returns the key it derived.
      *
-     * <p>Runs the dialog with {@code invokeAndWait} because {@code main} is deliberately not on the
-     * EDT (see {@link LauncherApp#start()}), yet everything after this point depends on the answer -
+     * <p>Blocks this thread until the player answers: {@code main} is deliberately not on the EDT
+     * (see {@link LauncherApp#start()}), and everything after this point depends on the answer -
      * there's nothing sensible to do concurrently while the player types their code.
      *
      * @return the derived key, or {@code null} when there's no PIN set (or the player reset it),
@@ -106,27 +112,23 @@ public final class Main {
             return null;
         }
 
-        // Holder rather than a return value: the verifier runs on the EDT inside the dialog, and
+        // Holder rather than a return value: the verifier runs on the EDT inside the window, and
         // the key it derives has to survive back out here.
         SecretKey[] unlocked = new SecretKey[1];
-        PinUnlockDialog.Outcome[] outcome = {PinUnlockDialog.Outcome.CANCELLED};
 
-        try {
-            SwingUtilities.invokeAndWait(() -> outcome[0] = PinUnlockDialog.show(pin -> {
-                SecretKey candidate = deriveAndVerify(dirs, pinProtection, pin);
-                if (candidate == null) {
-                    return false;
-                }
-                unlocked[0] = candidate;
-                return true;
-            }));
-        } catch (Exception e) {
-            Log.error(Main.class, "Could not show the PIN unlock dialog", e);
-            System.exit(1);
-            return null;
-        }
+        // Called straight from this (non-EDT) thread, not wrapped in invokeAndWait: the PIN window
+        // is a JFrame now, so it no longer blocks by being modal - showAndAwait does the waiting
+        // itself, and doing that on the EDT would deadlock it.
+        PinUnlockDialog.Outcome outcome = PinUnlockDialog.showAndAwait(pin -> {
+            SecretKey candidate = deriveAndVerify(dirs, pinProtection, pin);
+            if (candidate == null) {
+                return false;
+            }
+            unlocked[0] = candidate;
+            return true;
+        }, new LogoCache(dirs).cached());
 
-        return switch (outcome[0]) {
+        return switch (outcome) {
             case UNLOCKED -> unlocked[0];
             case FORGOTTEN -> {
                 PinReset.wipe(dirs, pinProtection);

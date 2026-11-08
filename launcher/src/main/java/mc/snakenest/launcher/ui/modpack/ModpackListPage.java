@@ -37,7 +37,8 @@ public final class ModpackListPage extends JPanel {
         for (ModpackSummary modpack : viewModel.modpacks()) {
             ModpackCardView card = new ModpackCardView(modpack, viewModel.isInstalled(modpack), viewModel.isUpdateAvailable(modpack),
                     viewModel.logoFor(modpack), () -> viewModel.select(modpack), () -> viewModel.quickAction(modpack),
-                    viewModel.onCancel(), viewModel.onStop(), viewModel.onKill());
+                    () -> viewModel.cancel(modpack), () -> viewModel.stop(modpack), () -> viewModel.kill(modpack));
+            card.setLocalAvailability(viewModel.isOffline(), viewModel.isRemoved(modpack));
             viewModel.registerCard(modpack.slug(), card);
             card.setAlignmentX(Component.LEFT_ALIGNMENT);
             card.setMaximumSize(new java.awt.Dimension(Integer.MAX_VALUE, 84));

@@ -45,6 +45,8 @@ public final class LoginFrame extends JFrame {
     private final JProgressBar progressBar = new JProgressBar();
     private final JButton connectButton = new JButton("Se connecter");
     private final JButton cancelButton = new JButton("Annuler");
+    private final JButton offlineButton = new JButton("Mode hors connexion");
+    private Runnable onOffline;
 
     public LoginFrame(DeviceAuthService authService, LongConsumer onSuccess) {
         super("SnakeN3st Launcher - Connexion");
@@ -78,6 +80,9 @@ public final class LoginFrame extends JFrame {
         JPanel buttons = new JPanel();
         buttons.add(connectButton);
         buttons.add(cancelButton);
+        offlineButton.setVisible(false);
+        offlineButton.addActionListener(e -> { authService.cancel(); if (onOffline != null) onOffline.run(); });
+        buttons.add(offlineButton);
         buttons.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         logoPanel.setAlignmentX(Component.CENTER_ALIGNMENT);
@@ -122,6 +127,11 @@ public final class LoginFrame extends JFrame {
      * it, such a failure would leave this window stuck on "chargement..." with no way forward,
      * since the caller now owns closing it (see {@code LauncherApp#showShell}).
      */
+    public void setOfflineAction(Runnable action) {
+        onOffline = action;
+        if (action == null) offlineButton.setVisible(false);
+    }
+
     public void showPostLoginFailure(String message) {
         SwingUtilities.invokeLater(() -> {
             statusLabel.setForeground(Colors.danger());
@@ -129,6 +139,7 @@ public final class LoginFrame extends JFrame {
             progressBar.setVisible(false);
             connectButton.setVisible(true);
             connectButton.setEnabled(true);
+            offlineButton.setVisible(onOffline != null);
         });
     }
 
@@ -144,6 +155,7 @@ public final class LoginFrame extends JFrame {
                     statusLabel.setText(describe(state));
                     progressBar.setVisible(isBusy(state));
                     if (state == DeviceAuthState.FAILED || state == DeviceAuthState.CANCELLED) {
+                        offlineButton.setVisible(onOffline != null);
                         connectButton.setEnabled(true);
                         cancelButton.setVisible(false);
                     }
@@ -179,6 +191,7 @@ public final class LoginFrame extends JFrame {
                 SwingUtilities.invokeLater(() -> {
                     statusLabel.setForeground(Colors.danger());
                     statusLabel.setText(reasonMessage);
+                    offlineButton.setVisible(onOffline != null);
                 });
             }
         });

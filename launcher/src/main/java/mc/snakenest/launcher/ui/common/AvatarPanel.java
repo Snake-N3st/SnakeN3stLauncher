@@ -19,11 +19,11 @@ import java.awt.image.BufferedImage;
  */
 public final class AvatarPanel extends JPanel {
 
-    private final String letter;
+    private String letter;
     private BufferedImage image;
 
     public AvatarPanel(String name, int size) {
-        this.letter = name.isBlank() ? "?" : name.substring(0, 1).toUpperCase();
+        this.letter = letterOf(name);
         setPreferredSize(new Dimension(size, size));
         setMinimumSize(new Dimension(size, size));
         setMaximumSize(new Dimension(size, size));
@@ -34,6 +34,21 @@ public final class AvatarPanel extends JPanel {
     public void setImage(BufferedImage image) {
         this.image = image;
         repaint();
+    }
+
+    /**
+     * Changes the placeholder letter shown while {@link #image} is {@code null} - for a panel
+     * reused across several different items instead of recreated per item (e.g.
+     * {@code ui.modpack.ModManagerDialog}'s single persistent detail-page avatar). Repaints
+     * itself; has no visible effect once a real image is set.
+     */
+    public void setPlaceholderName(String name) {
+        this.letter = letterOf(name);
+        repaint();
+    }
+
+    private static String letterOf(String name) {
+        return name == null || name.isBlank() ? "?" : name.substring(0, 1).toUpperCase();
     }
 
     @Override

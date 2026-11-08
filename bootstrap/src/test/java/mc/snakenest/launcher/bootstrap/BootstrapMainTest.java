@@ -47,8 +47,12 @@ class BootstrapMainTest {
     }
 
     private static void invokePruneOldLauncherJars(AppDirs dirs, Path keep) throws Exception {
-        Method prune = BootstrapMain.class.getDeclaredMethod("pruneOldLauncherJars", AppDirs.class, Path.class);
+        // Path... is a Path[] parameter at the bytecode level (varargs are erased to an array) -
+        // getDeclaredMethod needs the array type, and invoke() needs the varargs wrapped in an
+        // Object[] of length 2 so reflection doesn't itself try to spread a bare Path[] across
+        // the (AppDirs, Path[]) parameter list.
+        Method prune = BootstrapMain.class.getDeclaredMethod("pruneOldLauncherJars", AppDirs.class, Path[].class);
         prune.setAccessible(true);
-        prune.invoke(null, dirs, keep);
+        prune.invoke(null, dirs, (Object) new Path[] {keep});
     }
 }

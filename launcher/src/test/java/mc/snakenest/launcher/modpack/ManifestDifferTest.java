@@ -11,8 +11,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ManifestDifferTest {
 
+    /** No .filesmetas rules in these cases, so the predicate only matters for the two legacy paths. */
+    private static final java.util.function.Predicate<String> PRESENT = path -> true;
+    private static final java.util.function.Predicate<String> ABSENT = path -> false;
+
     private static ModpackManifest manifest(ManifestFile... files) {
-        return new ModpackManifest("1.0.0", null, 0, "1.20.4", "vanilla", null, List.of(files), null, ModpackSettings.DEFAULT_MEMORY_MB);
+        return new ModpackManifest("1.0.0", null, null, 0, "1.20.4", "vanilla", null, List.of(files), null, ModpackSettings.DEFAULT_MEMORY_MB);
     }
 
     @Test
@@ -22,7 +26,7 @@ class ManifestDifferTest {
                 new ManifestFile("mods/b.jar", "hash-b", 20, null)
         );
 
-        SyncPlan plan = ManifestDiffer.diff(Optional.empty(), target);
+        SyncPlan plan = ManifestDiffer.diff(Optional.empty(), target, FileMetas.empty(), PRESENT, false);
 
         assertEquals(2, plan.toDownload().size());
         assertTrue(plan.toDelete().isEmpty());
@@ -34,7 +38,7 @@ class ManifestDifferTest {
         ModpackManifest target = manifest(file);
         StoredManifest previous = new StoredManifest("1.0.0", Map.of("mods/a.jar", "hash-a"));
 
-        SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target);
+        SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target, FileMetas.empty(), PRESENT, false);
 
         assertTrue(plan.toDownload().isEmpty());
         assertTrue(plan.toDelete().isEmpty());
@@ -51,7 +55,7 @@ class ManifestDifferTest {
                 "mods/b.jar", "hash-b"
         ));
 
-        SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target);
+        SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target, FileMetas.empty(), PRESENT, false);
 
         assertEquals(List.of(new ManifestFile("mods/a.jar", "hash-a-v2", 10, null)), plan.toDownload());
         assertTrue(plan.toDelete().isEmpty());
@@ -65,7 +69,7 @@ class ManifestDifferTest {
                 "mods/removed.jar", "hash-removed"
         ));
 
-        SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target);
+        SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target, FileMetas.empty(), PRESENT, false);
 
         assertTrue(plan.toDownload().isEmpty());
         assertEquals(List.of("mods/removed.jar"), plan.toDelete());
@@ -76,7 +80,7 @@ class ManifestDifferTest {
         ModpackManifest target = manifest(new ManifestFile("mods/new-name.jar", "hash-a", 10, null));
         StoredManifest previous = new StoredManifest("1.0.0", Map.of("mods/old-name.jar", "hash-a"));
 
-        SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target);
+        SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target, FileMetas.empty(), PRESENT, false);
 
         assertEquals(List.of(new ManifestFile("mods/new-name.jar", "hash-a", 10, null)), plan.toDownload());
         assertEquals(List.of("mods/old-name.jar"), plan.toDelete());
@@ -86,7 +90,7 @@ class ManifestDifferTest {
     void protectedFileIsSeededOnFreshInstall() {
         ModpackManifest target = manifest(new ManifestFile("options.txt", "hash-a", 10, null));
 
-        SyncPlan plan = ManifestDiffer.diff(Optional.empty(), target);
+        SyncPlan plan = ManifestDiffer.diff(Optional.empty(), target, FileMetas.empty(), ABSENT, false);
 
         assertEquals(List.of(new ManifestFile("options.txt", "hash-a", 10, null)), plan.toDownload());
     }
@@ -96,7 +100,7 @@ class ManifestDifferTest {
         ModpackManifest target = manifest(new ManifestFile("options.txt", "hash-a-v2", 10, null));
         StoredManifest previous = new StoredManifest("1.0.0", Map.of("options.txt", "hash-a-v1"));
 
-        SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target);
+        SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target, FileMetas.empty(), PRESENT, false);
 
         assertTrue(plan.toDownload().isEmpty());
     }
@@ -106,18 +110,32 @@ class ManifestDifferTest {
         ModpackManifest target = manifest();
         StoredManifest previous = new StoredManifest("1.0.0", Map.of("servers.dat", "hash-a"));
 
-        SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target);
+        SyncPlan plan = ManifestDiffer.diff(Optional.of(previous), target, FileMetas.empty(), PRESENT, false);
 
         assertTrue(plan.toDelete().isEmpty());
     }
 
+    /**
+     * Deliberately the opposite of what this asserted before: a repair used to re-seed player-owned
+     * files, silently destroying a server list. It now leaves them alone unless the player asks -
+     * see the test below and {@code LauncherApp#repairModpack}.
+     */
     @Test
-    void protectedFileIsReseededAfterReparerClearsTheLocalManifest() {
+    void repairAloneNoLongerOverwritesAPlayerOwnedFile() {
         ModpackManifest target = manifest(new ManifestFile("servers.dat", "hash-a-v2", 10, null));
 
         // "Réparer" clears the locally-recorded manifest before diffing (see
         // LocalManifestStore#clear) - simulated here the same way, Optional.empty().
-        SyncPlan plan = ManifestDiffer.diff(Optional.empty(), target);
+        SyncPlan plan = ManifestDiffer.diff(Optional.empty(), target, FileMetas.empty(), PRESENT, false);
+
+        assertTrue(plan.toDownload().isEmpty());
+    }
+
+    @Test
+    void repairRestoresAPlayerOwnedFileWhenThePlayerOptsIn() {
+        ModpackManifest target = manifest(new ManifestFile("servers.dat", "hash-a-v2", 10, null));
+
+        SyncPlan plan = ManifestDiffer.diff(Optional.empty(), target, FileMetas.empty(), PRESENT, true);
 
         assertEquals(List.of(new ManifestFile("servers.dat", "hash-a-v2", 10, null)), plan.toDownload());
     }

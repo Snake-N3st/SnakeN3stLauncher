@@ -1,20 +1,27 @@
 package mc.snakenest.launcher.ui.settings;
 
+import mc.snakenest.launcher.auth.ChannelInfo;
 import mc.snakenest.launcher.config.AssetStorageMode;
+import mc.snakenest.launcher.config.LaunchWindowAction;
 import mc.snakenest.launcher.config.Theme;
+import mc.snakenest.launcher.game.JavaRuntimes;
 import mc.snakenest.launcher.ui.about.LicensesDialog;
 import mc.snakenest.launcher.ui.common.Borders;
+import mc.snakenest.launcher.ui.common.Colors;
+import mc.snakenest.launcher.ui.common.JavaBinaryPicker;
 import mc.snakenest.launcher.util.AppVersion;
 
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JRadioButton;
 import javax.swing.JScrollPane;
 import javax.swing.ScrollPaneConstants;
 import javax.swing.ButtonGroup;
+import javax.swing.SwingUtilities;
 import javax.swing.border.EmptyBorder;
 import java.awt.BorderLayout;
 import java.awt.Component;
@@ -23,6 +30,7 @@ import java.awt.Desktop;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.net.URI;
+import java.util.List;
 import java.util.function.Consumer;
 
 /** Theme toggle, Discord status toggle, data folder shortcut, logout - see mockups for the general "settings-ish" tone. */
@@ -30,8 +38,13 @@ public final class SettingsPage extends JPanel {
 
     private static final String SOURCE_URL = "https://github.com/Snake-N3st/SnakeN3stLauncher";
 
+    private final JComboBox<ChannelOption> channelCombo = new JComboBox<>();
+
     public SettingsPage(Theme currentTheme, Consumer<Theme> onThemeChanged, boolean discordEnabled, Consumer<Boolean> onDiscordToggled,
                          AssetStorageMode currentAssetStorageMode, Consumer<AssetStorageMode> onAssetStorageModeChanged,
+                         LaunchWindowAction currentLaunchWindowAction, Consumer<LaunchWindowAction> onLaunchWindowActionChanged,
+                         String currentChannel, Consumer<String> onChannelChanged,
+                         String currentDefaultJavaPath, Consumer<String> onDefaultJavaPathChanged,
                          boolean pinEnabled, java.util.function.Predicate<Boolean> onPinToggled,
                          Runnable onMigrateAssetStorage,
                          Runnable onOpenDataFolder, Runnable onCleanup,
@@ -51,6 +64,17 @@ public final class SettingsPage extends JPanel {
 
         content.add(section("Stockage des ressources vanilla",
                 assetStorageModeRows(currentAssetStorageMode, onAssetStorageModeChanged, onMigrateAssetStorage)));
+        content.add(javax.swing.Box.createVerticalStrut(24));
+
+        content.add(section("Fenêtre du launcher au lancement d'un jeu",
+                launchWindowActionRows(currentLaunchWindowAction, onLaunchWindowActionChanged)));
+        content.add(javax.swing.Box.createVerticalStrut(24));
+
+        content.add(section("Canal de distribution du launcher", channelRow(currentChannel, onChannelChanged)));
+        content.add(javax.swing.Box.createVerticalStrut(24));
+
+        content.add(section("Java utilisé par les modpacks",
+                defaultJavaRow(currentDefaultJavaPath, onDefaultJavaPathChanged)));
         content.add(javax.swing.Box.createVerticalStrut(24));
 
         content.add(section("Sécurité", pinRows(pinEnabled, onPinToggled)));
@@ -149,6 +173,35 @@ public final class SettingsPage extends JPanel {
                     "Impossible d'ouvrir le navigateur. Lien : " + SOURCE_URL,
                     "Code source", javax.swing.JOptionPane.INFORMATION_MESSAGE);
         }
+    }
+
+    /**
+     * The launcher-wide Java default. Empty means the launcher's own JVM, which is what every
+     * install did before this setting existed - so the field names that JVM explicitly rather than
+     * leaving "default" as something the player has to guess at.
+     */
+    private JPanel defaultJavaRow(String currentPath, Consumer<String> onChanged) {
+        JavaBinaryPicker picker = new JavaBinaryPicker(currentPath,
+                "Java du launcher (" + JavaRuntimes.launcherJavaBinary() + ")");
+        picker.onChange(onChanged);
+
+        JPanel column = new JPanel();
+        column.setOpaque(false);
+        column.setLayout(new BoxLayout(column, BoxLayout.Y_AXIS));
+
+        JLabel hint = new JLabel("Un modpack peut choisir son propre Java depuis « Gérer ».");
+        hint.setForeground(Colors.muted());
+        hint.setFont(hint.getFont().deriveFont(java.awt.Font.PLAIN, 11f));
+
+        // BoxLayout centres children whose alignmentX disagree, which left this hint floating in
+        // the middle while every other hint on the page sits flush left.
+        picker.setAlignmentX(LEFT_ALIGNMENT);
+        hint.setAlignmentX(LEFT_ALIGNMENT);
+
+        column.add(picker);
+        column.add(hint);
+
+        return column;
     }
 
     private JPanel section(String title, javax.swing.JComponent row) {
@@ -258,6 +311,66 @@ public final class SettingsPage extends JPanel {
         return option;
     }
 
+    /**
+     * Global, not per-modpack (see {@link LaunchWindowAction}'s own Javadoc for why) - one choice
+     * applies no matter which modpack is launched, and correctly accounts for several running in
+     * parallel (the window only re-shows/closes once every one of them has exited).
+     */
+    private JPanel launchWindowActionRows(LaunchWindowAction current, Consumer<LaunchWindowAction> onChanged) {
+        JPanel column = new JPanel();
+        column.setOpaque(false);
+        column.setLayout(new BoxLayout(column, BoxLayout.Y_AXIS));
+
+        ButtonGroup group = new ButtonGroup();
+
+        column.add(launchWindowActionOption(group, current, onChanged, LaunchWindowAction.STAY_OPEN,
+                "Rester ouvert",
+                "Le launcher reste affiché pendant que le jeu tourne. Recommandé."));
+        column.add(javax.swing.Box.createVerticalStrut(10));
+
+        column.add(launchWindowActionOption(group, current, onChanged, LaunchWindowAction.HIDE_AND_RESHOW,
+                "Se cacher",
+                "Le launcher se cache au lancement et réapparaît automatiquement à la fermeture du jeu."));
+        column.add(javax.swing.Box.createVerticalStrut(10));
+
+        column.add(launchWindowActionOption(group, current, onChanged, LaunchWindowAction.CLOSE_ON_LAUNCH,
+                "Se fermer",
+                "Le launcher se ferme au lancement du jeu."));
+
+        JLabel help = new JLabel("<html>Si plusieurs modpacks tournent en même temps, le launcher ne réapparaît/ne se ferme "
+                + "qu'une fois qu'ils sont <b>tous</b> terminés.</html>");
+        help.setAlignmentX(Component.LEFT_ALIGNMENT);
+        help.setFont(help.getFont().deriveFont(Font.PLAIN, 12f));
+        help.setForeground(javax.swing.UIManager.getColor("Label.disabledForeground"));
+        help.setBorder(new EmptyBorder(10, 0, 0, 0));
+        column.add(help);
+
+        return column;
+    }
+
+    private JPanel launchWindowActionOption(ButtonGroup group, LaunchWindowAction current, Consumer<LaunchWindowAction> onChanged,
+                                             LaunchWindowAction action, String label, String description) {
+        JPanel option = new JPanel();
+        option.setOpaque(false);
+        option.setLayout(new BoxLayout(option, BoxLayout.Y_AXIS));
+        option.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        JRadioButton button = new JRadioButton(label, current == action);
+        button.setAlignmentX(Component.LEFT_ALIGNMENT);
+        button.addActionListener(e -> onChanged.accept(action));
+        group.add(button);
+        option.add(button);
+
+        JLabel help = new JLabel(description);
+        help.setAlignmentX(Component.LEFT_ALIGNMENT);
+        help.setFont(help.getFont().deriveFont(Font.PLAIN, 12f));
+        help.setForeground(javax.swing.UIManager.getColor("Label.disabledForeground"));
+        help.setBorder(new EmptyBorder(0, 24, 0, 0));
+        option.add(help);
+
+        return option;
+    }
+
     private JPanel dataRows(Runnable onOpenDataFolder, Runnable onCleanup) {
         JPanel column = new JPanel();
         column.setOpaque(false);
@@ -345,5 +458,83 @@ public final class SettingsPage extends JPanel {
         checkbox.addActionListener(e -> onDiscordToggled.accept(checkbox.isSelected()));
         row.add(checkbox);
         return row;
+    }
+
+    /**
+     * Starts disabled with a single "Chargement..." placeholder - the real list needs a network
+     * round-trip (see {@code auth.LauncherAuthApiClient#fetchChannels}), fetched by the caller and
+     * handed back via {@link #setAvailableChannels} once it arrives, rather than blocking this
+     * page's construction on it. Read by the bootstrap on its *next* run (see
+     * {@code config.LauncherConfig#channel}'s own Javadoc) - this page never fetches a jar itself.
+     */
+    private JPanel channelRow(String currentChannel, Consumer<String> onChannelChanged) {
+        JPanel column = new JPanel();
+        column.setOpaque(false);
+        column.setLayout(new BoxLayout(column, BoxLayout.Y_AXIS));
+
+        channelCombo.setAlignmentX(Component.LEFT_ALIGNMENT);
+        channelCombo.setEnabled(false);
+        channelCombo.addItem(new ChannelOption(currentChannel, "Chargement..."));
+        // Only the player's own choice should ever fire the callback - repopulating the combo's
+        // items below (setAvailableChannels) would otherwise also fire selection-changed events
+        // for the placeholder-to-real-list swap, persisting a channel the player never picked.
+        channelCombo.addActionListener(e -> {
+            if (channelCombo.isEnabled()) {
+                ChannelOption selected = (ChannelOption) channelCombo.getSelectedItem();
+                if (selected != null) {
+                    onChannelChanged.accept(selected.value());
+                }
+            }
+        });
+        column.add(channelCombo);
+
+        JLabel help = new JLabel("<html>Détermine quelle version du launcher le lanceur (bootstrap) télécharge au prochain démarrage. "
+                + "Un canal restreint peut nécessiter une reconnexion.</html>");
+        help.setAlignmentX(Component.LEFT_ALIGNMENT);
+        help.setFont(help.getFont().deriveFont(Font.PLAIN, 12f));
+        help.setForeground(javax.swing.UIManager.getColor("Label.disabledForeground"));
+        help.setBorder(new EmptyBorder(6, 0, 0, 0));
+        column.add(help);
+
+        return column;
+    }
+
+    /**
+     * Replaces the "Chargement..." placeholder with the real channel list once the async fetch
+     * (kicked off by the caller right after constructing this page) resolves. Safe from any
+     * thread. {@code currentChannel} is re-passed (rather than read back from the combo) since the
+     * placeholder item never actually carried the real value anywhere the player could see it.
+     */
+    public void setAvailableChannels(List<ChannelInfo> channels, String currentChannel) {
+        SwingUtilities.invokeLater(() -> {
+            channelCombo.removeAllItems();
+            channelCombo.addItem(new ChannelOption(null, "Canal par défaut"));
+            for (ChannelInfo channel : channels) {
+                String label = channel.name() + (channel.restricted() ? " (restreint)" : "") + (channel.isDefault() ? " — défaut" : "");
+                channelCombo.addItem(new ChannelOption(channel.name(), label));
+            }
+            selectChannel(currentChannel);
+            channelCombo.setEnabled(true);
+        });
+    }
+
+    private void selectChannel(String value) {
+        for (int i = 0; i < channelCombo.getItemCount(); i++) {
+            ChannelOption option = channelCombo.getItemAt(i);
+            if (java.util.Objects.equals(option.value(), value)) {
+                channelCombo.setSelectedItem(option);
+                return;
+            }
+        }
+        // The player's saved channel no longer exists (deleted, or hand-edited config) - falls
+        // back to visibly showing "default" rather than silently selecting some other channel.
+        channelCombo.setSelectedIndex(0);
+    }
+
+    private record ChannelOption(String value, String label) {
+        @Override
+        public String toString() {
+            return label;
+        }
     }
 }

@@ -25,3 +25,10 @@ top of this package.
 `URI.getPath()`. This API's query strings carry `signature`/`publicKey`/
 `client_id`; logging the full URL would print exactly the values a stolen
 log file could be replayed with.
+
+`PackIconCache` keeps site-scoped modpack icons and account-scoped avatars in
+`cache/public-icons`. Offline reads use disk only, including after a restart or
+when a pack has disappeared from the catalogue. Images are reduced to at most
+256 px and written atomically; failed refreshes retain the last readable image.
+Online, URL/version changes trigger a refresh, and unchanged entries are reused
+for up to 24 hours. The cache contains images and public image metadata only.

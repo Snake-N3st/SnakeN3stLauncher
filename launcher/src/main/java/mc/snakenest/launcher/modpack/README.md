@@ -98,3 +98,68 @@ string or path alone (two versions sharing a file never re-download it).
   encrypting under, since it would just sit in `secure/wrap.key` beside the
   data it protects.
 
+- **`InstanceActivity`** / **`InstanceState`** / **`InstanceStateRegistry`** —
+  what every modpack instance is currently doing (installing/running/being
+  stopped), one entry per slug in the registry's `ConcurrentHashMap`, fully
+  independent of every other slug. Replaced an earlier `LauncherApp`-private
+  single field that could only ever describe *one* modpack at a time:
+  starting an install on a second modpack while a first one was still
+  running silently overwrote the only record of the first one, so its own
+  "Arreter"/"Annuler" buttons read the now-wrong global state and became
+  no-ops, and a freshly (re)built page/card for it rendered idle even
+  though it was genuinely still active - see `ui.modpack/README.md` for the
+  full bug history.
+
+  Every operation (`beginInstalling`, `attachInstallTask`,
+  `transitionToRunning`, `beginStopping`, `processFor`, `cancelInstalling`,
+  `clearIfInstalling`, `clearIfProcessMatches`) is scoped to one slug and
+  built on `ConcurrentHashMap`'s own atomic `compute`/`computeIfPresent`/
+  `putIfAbsent` rather than a read-then-write pair, so two different
+  modpacks (or two threads touching the same one) can never race each
+  other into an inconsistent snapshot. `beginInstalling` returning `false`
+  is the one guard that never existed before: a slug that already has
+  activity in flight refuses a second one instead of silently overwriting
+  it. `isAnyActive()` is the one deliberately *non*-per-slug method - the
+  coarse "is anything happening anywhere" guard behind `game.assets`
+  migration and `maintenance.CleanupService`, which touch files across
+  every instance at once.
+
+  Pure Java, no Swing, no dependency on `LauncherApp` - unit-tested
+  directly (`InstanceStateRegistryTest`), unlike the private-field design
+  it replaced, which needed reflection into `LauncherApp` internals to test
+  at all.
+
+
+## `signing/` - signed manifests
+
+Every manifest the launcher fetches is checked in one place, `ModpackApiClient#getManifest`, before the sync
+engine sees it. Nothing is downloaded or installed from a refused one (`ModpackSignatureException`, a
+`ModpackApiException`, so it is shown like any other manifest failure).
+
+**The chain.** One pinned *root* key (`sn3.signing.modpackRootKeys`, baked into the bootstrap's `jvm.prop` by the
+site and forwarded by `BootstrapMain#spawnLauncher`; a list, for rotation) certifies each modpack's own key
+(`certificate {modpack, public_key, serial, signature}`: the root signs "this key is the key of this slug"), and
+that key signs each version (`signature`). Adding a modpack never touches the pin. `ModpackManifestVerifier` checks
+the certificate against the pin, then the version signature against the certified key.
+
+**What is signed.** `ModpackManifestStatements` rebuilds, byte-for-byte like the site's `ManifestCanonical.php`
+and `ModpackStatements.php` (a shared vector pins both - `ModpackSigningVectorTest`), the canonical manifest text
+(slug, version, Minecraft version, loader, loader version, **default JVM args**, every file's path / SHA-256 /
+size / external URL, sorted) and the two statements. Never sent by the server, always rebuilt from the slug that
+was asked for and the fields in hand. Not covered, on purpose: changelog, channel, `total_size`,
+`default_memory_mb` - none of them can run code.
+
+**Policy** (`ModpackTrustState`, `modpack-trust-state.json` in the data root): no pin = nothing checked;
+unsigned and never seen signed = accepted with a log warning (the transition); unsigned after a valid one was
+seen = refused (downgrade); an invalid signature, a certificate for another slug or from an unpinned root, a
+signed manifest of another version than the one pinned by name = refused; a certificate **serial** lower than
+the highest seen for that modpack = refused, which is what makes a compromised modpack key repairable (issue a
+higher serial and the old key's certificate can no longer be replayed). A missing or corrupt state file reads as
+"nothing seen yet" and never throws. The warning is a log line only - there is no dialog here, unlike the
+bootstrap's.
+
+## Téléchargements groupés
+
+La synchronisation utilise `GET /api/modpacks/{slug}/blobs?hashes=...`, jusqu’à 64 SHA-256 internes distincts par requête, uniquement pour les fichiers manquants ou modifiés. Chaque lot est transmis en flux `SN3B1`, sans archive ni recompression, puis vérifié (ordre, taille, SHA-256, fin du flux) dans un répertoire temporaire supprimé après synchronisation ou échec. Les doublons de contenu ne sont téléchargés qu’une fois. La fusion `.filesmetas` et les URL externes conservent leur comportement ; le fichier de règles peut nécessiter sa requête préalable.
+
+Le site doit être mis à jour avant de distribuer ces clients : pas de repli automatique vers les téléchargements unitaires si l’endpoint manque ou refuse le lot, pour éviter une rafale après un 429. L’ancien endpoint blob reste disponible pour les anciens clients. Les appels successifs au nouvel endpoint sont espacés pour éviter les signatures identiques dans la même seconde. L’espace temporaire peut atteindre la taille des blobs internes à mettre à jour ; le transport reste borné en mémoire.

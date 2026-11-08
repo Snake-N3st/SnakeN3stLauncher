@@ -12,15 +12,17 @@ import java.util.function.Consumer;
 /** Data + callbacks for {@link ModpackListPage}. Holds no logic of its own. */
 public final class ModpackListViewModel {
 
+    private boolean offline;
+    private Set<String> removedSlugs = Set.of();
     private final List<ModpackSummary> modpacks;
     private final Set<String> installedSlugs;
     private final Set<String> updateAvailableSlugs;
     private final Map<String, BufferedImage> logos;
     private final Consumer<ModpackSummary> onSelect;
     private final Consumer<ModpackSummary> onQuickAction;
-    private final Runnable onCancel;
-    private final Runnable onStop;
-    private final Runnable onKill;
+    private final Consumer<ModpackSummary> onCancel;
+    private final Consumer<ModpackSummary> onStop;
+    private final Consumer<ModpackSummary> onKill;
     private final Map<String, ModpackCardView> cards = new HashMap<>();
 
     /**
@@ -31,9 +33,9 @@ public final class ModpackListViewModel {
      */
     public ModpackListViewModel(List<ModpackSummary> modpacks, Set<String> installedSlugs,
                                  Consumer<ModpackSummary> onSelect, Consumer<ModpackSummary> onQuickAction) {
-        this(modpacks, installedSlugs, Set.of(), Map.of(), onSelect, onQuickAction, () -> {
-        }, () -> {
-        }, () -> {
+        this(modpacks, installedSlugs, Set.of(), Map.of(), onSelect, onQuickAction, m -> {
+        }, m -> {
+        }, m -> {
         });
     }
 
@@ -44,7 +46,13 @@ public final class ModpackListViewModel {
      *                              instead of "Demarrer"
      * @param logos     pre-fetched modpack logos keyed by slug - see {@code LauncherApp#buildModpackSection}
      * @param onCancel  cancels whichever quick-installed (or detail-page) sync/install is
-     *                  currently in flight - a busy card's icon switches to this
+     *                  currently in flight for the given modpack - a busy card's icon switches
+     *                  to this. A {@link Consumer}, not a bare {@link Runnable}, for the same
+     *                  reason {@code onSelect}/{@code onQuickAction} already are: every card
+     *                  needs its own scoped action, since several modpacks can each have their
+     *                  own independent activity in flight at once (see
+     *                  {@code modpack.InstanceStateRegistry}) - a single shared {@code Runnable}
+     *                  here would have no way to know which card was actually clicked.
      * @param onStop    asks the currently-running game to exit (not forcibly) - a running
      *                  card's icon switches to this
      * @param onKill    force-kills the currently-running game outright - a stopping card's
@@ -52,7 +60,7 @@ public final class ModpackListViewModel {
      */
     public ModpackListViewModel(List<ModpackSummary> modpacks, Set<String> installedSlugs, Set<String> updateAvailableSlugs,
                                  Map<String, BufferedImage> logos, Consumer<ModpackSummary> onSelect, Consumer<ModpackSummary> onQuickAction,
-                                 Runnable onCancel, Runnable onStop, Runnable onKill) {
+                                 Consumer<ModpackSummary> onCancel, Consumer<ModpackSummary> onStop, Consumer<ModpackSummary> onKill) {
         this.modpacks = modpacks;
         this.installedSlugs = installedSlugs;
         this.updateAvailableSlugs = updateAvailableSlugs;
@@ -63,6 +71,12 @@ public final class ModpackListViewModel {
         this.onStop = onStop;
         this.onKill = onKill;
     }
+
+    public void setLocalAvailability(boolean offline, Set<String> removedSlugs) {
+        this.offline = offline; this.removedSlugs = Set.copyOf(removedSlugs);
+    }
+    public boolean isOffline() { return offline; }
+    public boolean isRemoved(ModpackSummary pack) { return removedSlugs.contains(pack.slug()); }
 
     public List<ModpackSummary> modpacks() {
         return modpacks;
@@ -89,16 +103,19 @@ public final class ModpackListViewModel {
         onQuickAction.accept(modpack);
     }
 
-    Runnable onCancel() {
-        return onCancel;
+    /** Cancels {@code modpack}'s sync/install, if one is currently in flight - the card's "Annuler" icon. */
+    public void cancel(ModpackSummary modpack) {
+        onCancel.accept(modpack);
     }
 
-    Runnable onStop() {
-        return onStop;
+    /** Asks {@code modpack}'s running game to exit (not forcibly) - the card's "Arreter" icon. */
+    public void stop(ModpackSummary modpack) {
+        onStop.accept(modpack);
     }
 
-    Runnable onKill() {
-        return onKill;
+    /** Force-kills {@code modpack}'s running game outright - the card's "Tuer" icon. */
+    public void kill(ModpackSummary modpack) {
+        onKill.accept(modpack);
     }
 
     /** Called once per card by {@link ModpackListPage} as it builds the list, so {@code setCard*} below can reach it later. */

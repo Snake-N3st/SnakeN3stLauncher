@@ -1,7 +1,7 @@
 /**
- * Ed25519 key handling ({@link mc.snakenest.launcher.crypto.Ed25519KeyPair})
- * and encrypted-at-rest storage of the player's private key
- * ({@link mc.snakenest.launcher.crypto.KeyStorage}). Depends only on
- * {@code util} and {@code net.i2p.crypto:eddsa} - no network, no UI.
+ * The optional PIN code ({@link mc.snakenest.launcher.crypto.PinProtection}) - everything else
+ * that used to live here (key handling, encrypted-at-rest storage) moved to {@code common}'s own
+ * {@code mc.snakenest.launcher.crypto} package so {@code bootstrap} can reuse it too. See this
+ * package's README for why.
  */
 package mc.snakenest.launcher.crypto;

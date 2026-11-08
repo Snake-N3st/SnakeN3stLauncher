@@ -2,15 +2,18 @@ package mc.snakenest.launcher.ui.pin;
 
 import mc.snakenest.launcher.crypto.PinProtection;
 import mc.snakenest.launcher.ui.common.Colors;
+import mc.snakenest.launcher.util.Log;
+import mc.snakenest.launcher.util.StartupSignal;
 
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
-import javax.swing.JDialog;
+import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JPasswordField;
 import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 import javax.swing.border.EmptyBorder;
 import java.awt.BorderLayout;
@@ -18,12 +21,20 @@ import java.awt.Component;
 import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.Font;
+import java.awt.image.BufferedImage;
 import java.util.Arrays;
+import java.util.concurrent.CountDownLatch;
 
 /**
- * The PIN gate shown at startup when {@link PinProtection#isEnabled()}. Modal and blocking: the
- * launcher has nothing to show until the token is decryptable, so this is deliberately its own
- * window rather than a page inside the shell (same reasoning as {@code ui.LoginFrame}).
+ * The PIN gate shown at startup when {@link PinProtection#isEnabled()}. Blocking: the launcher has
+ * nothing to show until the token is decryptable, so this is deliberately its own window rather
+ * than a page inside the shell (same reasoning as {@code ui.LoginFrame}).
+ *
+ * <p><b>A frame, not a dialog.</b> It used to be a modal {@code JDialog} with no owner, which on
+ * every desktop means a window with no taskbar entry - a player who clicked away from it had no way
+ * back to it and reasonably concluded the launcher had failed to start. A {@code JFrame} gets its
+ * own taskbar button. The modality that used to make {@code setVisible(true)} block is replaced by
+ * the latch in {@link #showAndAwait}, which is why that method must not run on the EDT.
  *
  * <p>Verification is done by the caller, not here - this dialog can't tell a right PIN from a
  * wrong one on its own (deriving a key always "works"; only decrypting the token fails, see
@@ -34,7 +45,7 @@ import java.util.Arrays;
  * (that's the point of not storing the key), so the only thing it can offer is wiping the token
  * and the encrypted modpack files and starting over from the login screen.
  */
-public final class PinUnlockDialog extends JDialog {
+public final class PinUnlockDialog extends JFrame {
 
     /** What the caller does with a candidate PIN: derive the key and try to actually use it. */
     public interface Verifier {
@@ -54,11 +65,16 @@ public final class PinUnlockDialog extends JDialog {
 
     private final JPasswordField pinField = new JPasswordField(12);
     private final JLabel errorLabel = new JLabel(" ", SwingConstants.CENTER);
-    private Outcome outcome = Outcome.CANCELLED;
+    private final CountDownLatch finished = new CountDownLatch(1);
+    private volatile Outcome outcome = Outcome.CANCELLED;
 
-    private PinUnlockDialog(Verifier verifier) {
-        super((java.awt.Frame) null, "SnakeN3st Launcher - Code PIN", true);
+    private PinUnlockDialog(Verifier verifier, BufferedImage icon) {
+        super("SnakeN3st Launcher - Code PIN");
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
+
+        if (icon != null) {
+            setIconImage(icon);
+        }
 
         JPanel content = new JPanel();
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
@@ -107,17 +123,68 @@ public final class PinUnlockDialog extends JDialog {
         setMinimumSize(new Dimension(360, 280));
         setLocationRelativeTo(null);
         getRootPane().setDefaultButton(unlock);
+
+        // Closing the window is a decision, not an accident to ignore: without this the latch
+        // below would never count down and the launcher would hang with no window at all.
+        addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override
+            public void windowClosed(java.awt.event.WindowEvent e) {
+                finished.countDown();
+            }
+        });
     }
 
     /**
-     * Blocks until the player unlocks, gives up, or asks to reset. Must be called on the EDT.
+     * Blocks until the player unlocks, gives up, or asks to reset.
+     *
+     * <p><b>Must not be called on the EDT</b> - it waits on a latch that only the EDT can release.
+     * The window itself is built and shown on the EDT internally.
+     *
+     * @param icon the cached client logo, or {@code null} - this runs before any branding fetch,
+     *             so the cache (see {@code net.LogoCache}) is the only source of one available
      */
-    public static Outcome show(Verifier verifier) {
-        PinUnlockDialog dialog = new PinUnlockDialog(verifier);
-        dialog.setVisible(true);
-        Outcome outcome = dialog.outcome;
-        dialog.dispose();
-        return outcome;
+    public static Outcome showAndAwait(Verifier verifier, BufferedImage icon) {
+        PinUnlockDialog[] holder = new PinUnlockDialog[1];
+
+        try {
+            // invokeAndWait, not invokeLater: it returns only once the window exists, so the latch
+            // below can be awaited without first having to poll for construction to finish. Safe
+            // precisely because this method is documented as never running on the EDT.
+            SwingUtilities.invokeAndWait(() -> {
+                holder[0] = new PinUnlockDialog(verifier, icon);
+                holder[0].setVisible(true);
+                holder[0].forceToFront();
+
+                // This is the first window a PIN-protected player ever sees, so it is what the
+                // bootstrap's splash should hand over to. Without this the splash stayed pinned on
+                // top of the PIN prompt until its timeout expired.
+                StartupSignal.signalReady();
+
+                holder[0].pinField.requestFocusInWindow();
+            });
+
+            holder[0].finished.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Outcome.CANCELLED;
+        } catch (Exception e) {
+            Log.error(PinUnlockDialog.class, "Could not show the PIN window", e);
+            return Outcome.CANCELLED;
+        }
+
+        return holder[0].outcome;
+    }
+
+    /**
+     * Raises and focuses the window reliably, including on Windows where a plain {@code toFront()}
+     * from a process that does not own the foreground is silently ignored - same workaround, and
+     * same reason, as {@code LauncherApp#forceToFront}.
+     */
+    private void forceToFront() {
+        setAlwaysOnTop(true);
+        toFront();
+        requestFocus();
+        setAlwaysOnTop(false);
     }
 
     private void submit(Verifier verifier) {
@@ -132,7 +199,7 @@ public final class PinUnlockDialog extends JDialog {
                 return;
             }
             outcome = Outcome.UNLOCKED;
-            setVisible(false);
+            dispose();
         } finally {
             // The field keeps its own copy until cleared; zero ours either way so a wrong-PIN
             // retry doesn't leave a trail of them alive on the heap.
@@ -184,7 +251,7 @@ public final class PinUnlockDialog extends JDialog {
 
         if (choice == javax.swing.JOptionPane.YES_OPTION) {
             outcome = Outcome.FORGOTTEN;
-            setVisible(false);
+            dispose();
         }
     }
 }

@@ -56,6 +56,12 @@ public final class FullShellPreview {
                 enabled -> System.out.println("[preview] would " + (enabled ? "enable" : "disable") + " Discord status"),
                 mc.snakenest.launcher.config.AssetStorageMode.LAUNCHER_SHARED,
                 mode -> System.out.println("[preview] would store vanilla assets as " + mode),
+                mc.snakenest.launcher.config.LaunchWindowAction.STAY_OPEN,
+                action -> System.out.println("[preview] would set launch window action to " + action),
+                null,
+                channel -> System.out.println("[preview] would set distribution channel to " + channel),
+                null,
+                javaPath -> System.out.println("[preview] would run modpacks with Java " + javaPath),
                 false,
                 enable -> {
                     System.out.println("[preview] would " + (enable ? "enable" : "disable") + " the PIN");
@@ -87,9 +93,9 @@ public final class FullShellPreview {
         ModpackListPage listPage = new ModpackListPage(new ModpackListViewModel(modpacks, Set.of("aventure-ultime"), Set.of("aventure-ultime"), Map.of(),
                 modpack -> showDetail(frame, sectionHolder[0], modpack),
                 modpack -> System.out.println("[preview] would quick install/launch " + modpack.slug()),
-                () -> System.out.println("[preview] would cancel the in-flight quick action"),
-                () -> System.out.println("[preview] would stop the quick-launched game"),
-                () -> System.out.println("[preview] would force-kill the quick-launched game")));
+                modpack -> System.out.println("[preview] would cancel " + modpack.slug() + "'s in-flight quick action"),
+                modpack -> System.out.println("[preview] would stop " + modpack.slug() + "'s quick-launched game"),
+                modpack -> System.out.println("[preview] would force-kill " + modpack.slug() + "'s quick-launched game")));
         sectionHolder[0] = new ModpackSectionPage(listPage);
         frame.addPage(NavTarget.MODPACKS, sectionHolder[0]);
 
@@ -125,13 +131,15 @@ public final class FullShellPreview {
                 ModpackSettings.defaults(),
                 () -> System.out.println("[preview] would install/launch " + modpack.slug()),
                 () -> System.out.println("[preview] would repair " + modpack.slug()),
+                () -> System.out.println("[preview] would open the mod manager for " + modpack.slug()),
                 () -> System.out.println("[preview] would uninstall " + modpack.slug()),
                 () -> System.out.println("[preview] would cancel the install for " + modpack.slug()),
                 () -> System.out.println("[preview] would stop the running game for " + modpack.slug()),
                 () -> System.out.println("[preview] would force-kill the running game for " + modpack.slug()),
                 newSettings -> System.out.println("[preview] would save settings " + newSettings),
                 () -> System.out.println("[preview] would open the instance folder"),
-                back
+                back,
+                java.util.List::of
         );
         section.showDetail(new ModpackDetailPage(viewModel));
         frame.showBackButton(modpack.name(), back);

@@ -4,9 +4,12 @@ This repository produces two distributed artifacts, each under its own
 license (see each module's own `LICENSE` file):
 
 - **`bootstrap`** — no third-party runtime dependency beyond Gson
-  (Apache-2.0). Contains no GPL code. **Proprietary, All Rights Reserved**
-  (Snake N3st) — never combines with GPL code, so it's under no copyleft
-  obligation and stays closed at the copyright holder's discretion.
+  (Apache-2.0) and, transitively via `common`, `net.i2p.crypto:eddsa`
+  (CC0 1.0, public domain - needed to sign a request when fetching a
+  restricted distribution channel's release). Contains no GPL code.
+  **Proprietary, All Rights Reserved** (Snake N3st) — never combines with
+  GPL code, so it's under no copyleft obligation and stays closed at the
+  copyright holder's discretion.
 - **`launcher`** — the complete application. Embeds three GPL-3.0-licensed
   libraries (see below), so **the `launcher` module is distributed under
   the GNU General Public License v3.0** (see `launcher/LICENSE`).
@@ -47,12 +50,14 @@ Corresponding Source from inside the app itself.
 | [DiscordIPC](https://github.com/jagrosh/DiscordIPC) (`com.github.jagrosh:DiscordIPC`, via JitPack - see `discord/README.md`) | commit `a8d6631` | Apache-2.0 | Optional Discord Rich Presence |
 | [junixsocket](https://github.com/kohlschutter/junixsocket) (transitive, via DiscordIPC) | 2.6.2 | Apache-2.0 | Unix domain socket used by DiscordIPC on Linux/macOS - the launcher's only native-code dependency |
 | [SLF4J API](https://www.slf4j.org/) (transitive, via DiscordIPC) | 2.0.7 | MIT | Logging facade required by DiscordIPC (unused otherwise - this launcher uses `java.util.logging`) |
+| [TwelveMonkeys ImageIO WebP](https://github.com/haraldk/TwelveMonkeys) (`com.twelvemonkeys.imageio:imageio-webp` + transitive `imageio-core`/`imageio-metadata`/`common-lang`/`common-io`/`common-image`) | 3.12.0 | BSD 3-Clause | Decoding `.webp` mod icons from Modrinth - the JDK's built-in ImageIO has no WebP reader at all |
 
 ## Dependencies of `bootstrap`
 
 | Library | Version | License | Used for |
 |---|---|---|---|
 | [Gson](https://github.com/google/gson) | 2.14.0 | Apache-2.0 | Parsing the launcher-release API response |
+| [net.i2p.crypto:eddsa](https://github.com/str4d/ed25519-java) (transitive, via `common`) | 0.3.0 | CC0 1.0 Universal (public domain) | Signing a request to prove eligibility for a restricted distribution channel |
 
 ## Test-only dependencies (not shipped in either jar)
 

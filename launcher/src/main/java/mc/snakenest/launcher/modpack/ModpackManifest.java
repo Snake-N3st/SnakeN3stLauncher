@@ -22,6 +22,8 @@ import java.util.List;
  */
 public record ModpackManifest(
         String version,
+        /** The distribution channel this version was actually resolved from - see {@code ModpackApiClient#getManifest}. */
+        String channel,
         String changelog,
         @SerializedName("total_size") long totalSize,
         @SerializedName("mc_version") String mcVersion,
@@ -29,8 +31,32 @@ public record ModpackManifest(
         @SerializedName("loader_version") String loaderVersion,
         List<ManifestFile> files,
         @SerializedName("default_jvm_args") String defaultJvmArgs,
-        @SerializedName("default_memory_mb") Integer rawDefaultMemoryMb
+        @SerializedName("default_memory_mb") Integer rawDefaultMemoryMb,
+        /** The version signature, absent while the version is unsigned - see {@code signing.ModpackManifestVerifier}. */
+        Signature signature,
+        /** The root's certificate for the key that made {@link #signature}; absent exactly when it is. */
+        Certificate certificate
 ) {
+
+    /** @param alg always {@code "ed25519"}; {@code value} is 128 hex characters */
+    public record Signature(String alg, String value) {
+    }
+
+    /** What the root signed to bind {@code publicKey} to {@code modpack}; {@code serial} only ever goes up. */
+    public record Certificate(String modpack,
+                              @SerializedName("public_key") String publicKey,
+                              long serial,
+                              String signature) {
+    }
+
+    /** An unsigned manifest: what the server sent before it signed anything, and what most tests build. */
+    public ModpackManifest(String version, String channel, String changelog, long totalSize, String mcVersion,
+                           String loader, String loaderVersion, List<ManifestFile> files, String defaultJvmArgs,
+                           Integer rawDefaultMemoryMb) {
+        this(version, channel, changelog, totalSize, mcVersion, loader, loaderVersion, files, defaultJvmArgs,
+                rawDefaultMemoryMb, null, null);
+    }
+
     public ModLoader modLoader() {
         return ModLoader.fromApiValue(loader);
     }

@@ -20,16 +20,19 @@ public final class ModpackSectionPage extends JPanel implements Resettable {
 
     private static final String LIST = "list";
     private static final String DETAIL = "detail";
+    private static final String INSTALLED_MODS = "installedMods";
 
     private final CardLayout cardLayout = new CardLayout();
     private final JPanel listContainer = new JPanel(new BorderLayout());
     private final JPanel detailContainer = new JPanel(new BorderLayout());
+    private final JPanel installedModsContainer = new JPanel(new BorderLayout());
 
     public ModpackSectionPage(ModpackListPage listPage) {
         setLayout(cardLayout);
         listContainer.add(listPage, BorderLayout.CENTER);
         add(listContainer, LIST);
         add(detailContainer, DETAIL);
+        add(installedModsContainer, INSTALLED_MODS);
     }
 
     /**
@@ -65,5 +68,17 @@ public final class ModpackSectionPage extends JPanel implements Resettable {
         detailContainer.add(detailPage, BorderLayout.CENTER);
         detailContainer.revalidate();
         cardLayout.show(this, DETAIL);
+    }
+
+    /**
+     * The installed-mods list for one modpack ({@code InstalledModsPage}) - a page pushed on top
+     * of the detail view (its own "Retour" goes back to {@link #showDetail}, not {@link #showList}),
+     * not a popup dialog: only the "Ajouter" flow within it opens a real {@code ModManagerDialog}.
+     */
+    public void showInstalledMods(JComponent installedModsPage) {
+        installedModsContainer.removeAll();
+        installedModsContainer.add(installedModsPage, BorderLayout.CENTER);
+        installedModsContainer.revalidate();
+        cardLayout.show(this, INSTALLED_MODS);
     }
 }

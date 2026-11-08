@@ -214,6 +214,62 @@ public final class Icons {
         });
     }
 
+    /** A single jigsaw-puzzle piece (outward bump on top, inward notch on the right) - "Gérer les mods". */
+    public static Icon puzzlePiece(int size) {
+        return icon(size, (g, s) -> {
+            g.setStroke(stroke(s));
+            float pad = s * 0.16f;
+            float left = pad;
+            float right = s - pad;
+            float top = pad;
+            float bottom = s - pad;
+            float bumpR = s * 0.13f;
+            float midX = (left + right) / 2f;
+            float midY = (top + bottom) / 2f;
+
+            Path2D piece = new Path2D.Float();
+            piece.moveTo(left, top);
+            piece.lineTo(midX - bumpR, top);
+            piece.curveTo(midX - bumpR, top - bumpR * 1.6f, midX + bumpR, top - bumpR * 1.6f, midX + bumpR, top);
+            piece.lineTo(right, top);
+            piece.lineTo(right, midY - bumpR);
+            piece.curveTo(right - bumpR * 1.6f, midY - bumpR, right - bumpR * 1.6f, midY + bumpR, right, midY + bumpR);
+            piece.lineTo(right, bottom);
+            piece.lineTo(left, bottom);
+            piece.closePath();
+            g.draw(piece);
+        });
+    }
+
+    /** A trash can (lid + tapered bin + two ribs) - a destructive "remove" action, e.g. {@code ui.modpack.InstalledModsPage}'s "Retirer". */
+    public static Icon trash(int size) {
+        return icon(size, (g, s) -> {
+            g.setStroke(stroke(s));
+            float lidY = s * 0.28f;
+            float binTop = s * 0.34f;
+            float binBottom = s * 0.86f;
+            float binTopLeft = s * 0.28f;
+            float binTopRight = s * 0.72f;
+            float binBottomLeft = s * 0.34f;
+            float binBottomRight = s * 0.66f;
+
+            g.drawLine(Math.round(s * 0.2f), Math.round(lidY), Math.round(s * 0.8f), Math.round(lidY));
+            g.drawLine(Math.round(s * 0.4f), Math.round(lidY), Math.round(s * 0.42f), Math.round(s * 0.16f));
+            g.drawLine(Math.round(s * 0.6f), Math.round(lidY), Math.round(s * 0.58f), Math.round(s * 0.16f));
+            g.drawLine(Math.round(s * 0.42f), Math.round(s * 0.16f), Math.round(s * 0.58f), Math.round(s * 0.16f));
+
+            Path2D bin = new Path2D.Float();
+            bin.moveTo(binTopLeft, binTop);
+            bin.lineTo(binBottomLeft, binBottom);
+            bin.lineTo(binBottomRight, binBottom);
+            bin.lineTo(binTopRight, binTop);
+            g.draw(bin);
+
+            g.drawLine(Math.round(s * 0.42f), Math.round(s * 0.42f), Math.round(s * 0.44f), Math.round(s * 0.78f));
+            g.drawLine(Math.round(s * 0.58f), Math.round(s * 0.42f), Math.round(s * 0.56f), Math.round(s * 0.78f));
+        });
+    }
+
     private static BasicStroke stroke(int size) {
         return new BasicStroke(Math.max(1.5f, size / 10f), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
     }

@@ -10,6 +10,14 @@ Nothing here talks to the network, to Swing, or to any third-party library.
   - macOS: `~/Library/Application Support/snake-n3st`
   - Windows: `%APPDATA%\snake-n3st`
 
+  `-Dsn3.appId=<name>` replaces just the `snake-n3st` folder name (same
+  OS-specific parent), so a test site's launcher and the production one can
+  live on the same machine with separate config, keys and instances. The site
+  bakes it into `jvm.prop` from its configured package id, only when that id
+  is not the default (existing installs keep their folder); the bootstrap
+  forwards it to the launcher it spawns. Only a plain name is accepted
+  (`[a-z0-9][a-z0-9+.-]*`) - anything that could be a path is ignored.
+
   `-Dsn3.dataDir=...` overrides all of the above with an arbitrary
   directory, read by both `bootstrap` and `launcher` (both go through this
   same class) - mainly to point a test/dev run at its own throwaway

@@ -2,6 +2,8 @@ package mc.snakenest.launcher.ui.modpack;
 
 import mc.snakenest.launcher.modpack.ModpackSummary;
 import mc.snakenest.launcher.ui.common.AvatarPanel;
+import mc.snakenest.launcher.ui.common.Borders;
+import mc.snakenest.launcher.ui.common.Buttons;
 import mc.snakenest.launcher.ui.common.Icons;
 import mc.snakenest.launcher.util.HumanSize;
 
@@ -12,21 +14,16 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
-import javax.swing.border.AbstractBorder;
 import javax.swing.border.EmptyBorder;
 import java.awt.BorderLayout;
-import java.awt.Color;
-import java.awt.Component;
 import java.awt.Cursor;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
-import java.awt.Insets;
 import java.awt.RenderingHints;
 import java.awt.event.ActionListener;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
-import java.awt.geom.Ellipse2D;
 import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
 
@@ -55,36 +52,13 @@ final class ModpackCardView extends JPanel {
 
     private enum ButtonState { IDLE, BUSY, RUNNING, STOPPING }
 
-    // Paints its own circular background (rollover/pressed only - unlike ui.common.IconButton,
-    // there's no "selected" state, this is a fire-once action button, not a toggle), same
-    // reasoning as the sidebar's IconButton: a round nav/action icon reads better as an actual
-    // circle than FlatLaf's default "toolBarButton" rounded-square hover shape.
-    private final JButton actionButton = new JButton() {
-        @Override
-        protected void paintComponent(Graphics g) {
-            Color background = (getModel().isRollover() || getModel().isPressed())
-                    ? UIManager.getColor("Component.borderColor")
-                    : null;
-            if (background != null) {
-                Graphics2D g2 = (Graphics2D) g.create();
-                try {
-                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                    int d = Math.min(getWidth(), getHeight());
-                    int x = (getWidth() - d) / 2;
-                    int y = (getHeight() - d) / 2;
-                    g2.setColor(background);
-                    g2.fill(new Ellipse2D.Float(x, y, d, d));
-                } finally {
-                    g2.dispose();
-                }
-            }
-            super.paintComponent(g);
-        }
-    };
+    private final JButton actionButton = Buttons.roundActionButton(ACTION_BUTTON_SIZE);
     private final Runnable onQuickAction;
     private final Runnable onCancel;
     private final Runnable onStop;
     private final Runnable onKill;
+    private final JLabel availabilityLabel = new JLabel();
+    private boolean localOnly;
     private boolean installed;
     private boolean updateAvailable;
     private ButtonState buttonState = ButtonState.IDLE;
@@ -99,7 +73,7 @@ final class ModpackCardView extends JPanel {
         this.onKill = onKill;
         setLayout(new BorderLayout(16, 0));
         setOpaque(false);
-        setBorder(new RoundedBorder(UIManager.getColor("Component.borderColor")));
+        setBorder(Borders.card());
         setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
         // Wrapped (rather than added to BorderLayout.WEST directly) purely for the left
@@ -130,24 +104,16 @@ final class ModpackCardView extends JPanel {
         textPanel.add(Box.createVerticalGlue());
         textPanel.add(nameLabel);
         textPanel.add(sizeLabel);
+        textPanel.add(availabilityLabel);
         textPanel.add(Box.createVerticalGlue());
 
         add(textPanel, BorderLayout.CENTER);
 
-        actionButton.setFocusPainted(false);
-        actionButton.setBorderPainted(false);
-        actionButton.setContentAreaFilled(false);
-        actionButton.setOpaque(false);
-        // Explicit fixed size, same reasoning as ui.common.IconButton's Javadoc - and this one
-        // additionally needs GridBagLayout (not BorderLayout) below, since BorderLayout.CENTER
-        // stretches its child to fill all remaining space regardless of that child's own max
-        // size, which would silently defeat a fixed circle diameter here too.
-        java.awt.Dimension actionButtonSize = new java.awt.Dimension(ACTION_BUTTON_SIZE, ACTION_BUTTON_SIZE);
-        actionButton.setPreferredSize(actionButtonSize);
-        actionButton.setMinimumSize(actionButtonSize);
-        actionButton.setMaximumSize(actionButtonSize);
         applyActionButton();
 
+        // GridBagLayout (not BorderLayout) here since BorderLayout.CENTER stretches its child to
+        // fill all remaining space regardless of that child's own max size, which would silently
+        // defeat roundActionButton's fixed circle diameter.
         JPanel actionWrapper = new JPanel(new java.awt.GridBagLayout());
         actionWrapper.setOpaque(false);
         actionWrapper.setBorder(new EmptyBorder(0, 0, 0, 12));
@@ -167,7 +133,16 @@ final class ModpackCardView extends JPanel {
      * {@link #installed}/{@link #updateAvailable} - same three-way logic as
      * {@code ModpackDetailPage#applyButtonLabel}).
      */
+    void setLocalAvailability(boolean offline, boolean removed) {
+        localOnly = offline || removed;
+        availabilityLabel.setText(removed ? "Retiré du site · Disponible localement" : offline ? "Hors connexion" : "");
+        availabilityLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
+        availabilityLabel.setVisible(localOnly);
+        applyActionButton();
+    }
+
     private void applyActionButton() {
+        actionButton.setEnabled(buttonState != ButtonState.IDLE || !localOnly || installed);
         for (ActionListener listener : actionButton.getActionListeners()) {
             actionButton.removeActionListener(listener);
         }
@@ -284,32 +259,5 @@ final class ModpackCardView extends JPanel {
             g2.dispose();
         }
         super.paintComponent(g);
-    }
-
-    /** Anti-aliased rounded outline - {@code LineBorder}'s built-in "rounded" flag looks too subtle to read as a card. */
-    private static final class RoundedBorder extends AbstractBorder {
-
-        private final Color color;
-
-        RoundedBorder(Color color) {
-            this.color = color;
-        }
-
-        @Override
-        public void paintBorder(Component c, Graphics g, int x, int y, int width, int height) {
-            Graphics2D g2 = (Graphics2D) g.create();
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g2.setColor(color);
-                g2.draw(new RoundRectangle2D.Float(x, y, width - 1, height - 1, ARC, ARC));
-            } finally {
-                g2.dispose();
-            }
-        }
-
-        @Override
-        public Insets getBorderInsets(Component c) {
-            return new Insets(4, 4, 4, 4);
-        }
     }
 }

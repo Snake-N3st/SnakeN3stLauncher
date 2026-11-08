@@ -13,7 +13,7 @@
     <artifactId>launcher</artifactId>
     <!-- The complete application - the version players see in Parametres > A propos, and the
          one published as a release on the site. See VERSIONING.md. -->
-    <version>2.0.1</version>
+    <version>2.5.0</version>
     <packaging>jar</packaging>
 
     <!--
@@ -30,16 +30,32 @@
             <artifactId>common</artifactId>
         </dependency>
 
-        <dependency>
-            <groupId>net.i2p.crypto</groupId>
-            <artifactId>eddsa</artifactId>
-            <version>0.3.0</version>
-        </dependency>
+        <!-- net.i2p.crypto:eddsa now comes transitively via common, which moved
+             crypto.Ed25519KeyPair there so bootstrap can reuse it too. -->
 
         <dependency>
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
             <version>2.14.0</version>
+        </dependency>
+
+        <!--
+            BSD 3-Clause - see NOTICE (verified against the actual POM's <licenses>, not
+            assumed - TwelveMonkeys is BSD, not Apache-2.0 despite that being the more common
+            license for this kind of library). The JDK's built-in ImageIO has no WebP reader at
+            all (verified directly: ImageIO.read() on a real Modrinth icon returns null, no
+            exception, no registered reader for the "webp" suffix) and Modrinth serves every
+            project icon as .webp - needed for ui.modpack.ModCardView's mod logos. Registers
+            itself via META-INF/services, picked up automatically by ImageIO.read() with no
+            code changes; the shaded jar's ServicesResourceTransformer (see the shade plugin
+            config below) keeps that working once packaged, not just when running from the IDE.
+            Pulls in imageio-core/imageio-metadata/common-lang/common-io/common-image, all the
+            same project and license.
+        -->
+        <dependency>
+            <groupId>com.twelvemonkeys.imageio</groupId>
+            <artifactId>imageio-webp</artifactId>
+            <version>3.12.0</version>
         </dependency>
 
         <!-- GPL-3.0 - see NOTICE. Embedded in this module's jar, not the sibling bootstrap. -->

@@ -4,8 +4,11 @@ import mc.snakenest.launcher.util.AppDirs;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -13,6 +16,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * The "withPin" mode's own mechanics only - a directly-constructed {@link SecretKey} stands in
+ * for whatever {@code launcher.crypto.PinProtection} would normally derive from a real PIN, since
+ * that class isn't reachable from here (this module doesn't depend on {@code launcher} - see this
+ * package's README). The real PIN-derivation round trip (wrong PIN rejection included) is tested
+ * in {@code launcher}'s own test tree instead, where both classes are available together.
+ */
 class EncryptedFileKeyStorageTest {
 
     private static final String SEED_HEX = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
@@ -66,9 +76,9 @@ class EncryptedFileKeyStorageTest {
     }
 
     @Test
-    void pinModeRoundTripsWithTheRightPin(@TempDir Path tempDir) throws Exception {
+    void pinModeRoundTripsWithTheSameKey(@TempDir Path tempDir) throws Exception {
         AppDirs dirs = new AppDirs(tempDir);
-        var pinKey = new PinProtection(dirs).enable("123456".toCharArray());
+        SecretKey pinKey = randomAesKey();
         Ed25519KeyPair original = Ed25519KeyPair.fromSeedHex(SEED_HEX);
 
         EncryptedFileKeyStorage.withPin(dirs, pinKey).save(original);
@@ -79,13 +89,12 @@ class EncryptedFileKeyStorageTest {
     }
 
     @Test
-    void pinModeRejectsTheWrongPin(@TempDir Path tempDir) throws Exception {
+    void pinModeRejectsTheWrongKey(@TempDir Path tempDir) throws Exception {
         AppDirs dirs = new AppDirs(tempDir);
-        PinProtection pin = new PinProtection(dirs);
-        var rightKey = pin.enable("123456".toCharArray());
+        SecretKey rightKey = randomAesKey();
         EncryptedFileKeyStorage.withPin(dirs, rightKey).save(Ed25519KeyPair.fromSeedHex(SEED_HEX));
 
-        var wrongKey = pin.deriveExisting("999999".toCharArray());
+        SecretKey wrongKey = randomAesKey();
 
         // This exact failure is how the unlock dialog detects a bad PIN - the GCM tag doesn't verify.
         assertThrows(KeyStorageException.class, () -> EncryptedFileKeyStorage.withPin(dirs, wrongKey).load());
@@ -101,8 +110,7 @@ class EncryptedFileKeyStorageTest {
         assertTrue(Files.isRegularFile(wrapKey), "the no-PIN mode should have written a wrapping key");
 
         // ...then switch to a PIN, which must take that key away - otherwise the PIN buys nothing.
-        var pinKey = new PinProtection(dirs).enable("123456".toCharArray());
-        EncryptedFileKeyStorage.withPin(dirs, pinKey).save(Ed25519KeyPair.fromSeedHex(SEED_HEX));
+        EncryptedFileKeyStorage.withPin(dirs, randomAesKey()).save(Ed25519KeyPair.fromSeedHex(SEED_HEX));
 
         assertFalse(Files.exists(wrapKey), "a PIN-protected vault must not leave a usable key on disk");
     }
@@ -110,10 +118,15 @@ class EncryptedFileKeyStorageTest {
     @Test
     void aPinProtectedTokenIsUnreadableWithoutThePin(@TempDir Path tempDir) throws Exception {
         AppDirs dirs = new AppDirs(tempDir);
-        var pinKey = new PinProtection(dirs).enable("123456".toCharArray());
-        EncryptedFileKeyStorage.withPin(dirs, pinKey).save(Ed25519KeyPair.fromSeedHex(SEED_HEX));
+        EncryptedFileKeyStorage.withPin(dirs, randomAesKey()).save(Ed25519KeyPair.fromSeedHex(SEED_HEX));
 
         // Exactly what a token grabber that copied secure/ and tried the normal path would get.
         assertTrue(new EncryptedFileKeyStorage(dirs).load().isEmpty());
+    }
+
+    private static SecretKey randomAesKey() {
+        byte[] bytes = new byte[32];
+        new SecureRandom().nextBytes(bytes);
+        return new SecretKeySpec(bytes, "AES");
     }
 }

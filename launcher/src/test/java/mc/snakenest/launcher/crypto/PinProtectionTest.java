@@ -115,4 +115,25 @@ class PinProtectionTest {
 
         assertFalse(metadata.contains("867530"), "the PIN itself must never be written to disk");
     }
+
+    /**
+     * The actual end-to-end flow the unlock dialog relies on, combining this class with
+     * {@code common}'s {@link EncryptedFileKeyStorage} - each has its own isolated tests
+     * elsewhere (this file; {@code common}'s own EncryptedFileKeyStorageTest, which uses a
+     * directly-constructed key instead of a real PIN since it can't depend on this class), this
+     * is the one place both are exercised together.
+     */
+    @Test
+    void aWrongPinFailsToDecryptATokenEncryptedWithTheRightOne(@TempDir Path root) throws Exception {
+        AppDirs dirs = new AppDirs(root);
+        PinProtection pin = new PinProtection(dirs);
+        SecretKey rightKey = pin.enable("123456".toCharArray());
+        Ed25519KeyPair seed = Ed25519KeyPair.fromSeedHex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+        EncryptedFileKeyStorage.withPin(dirs, rightKey).save(seed);
+
+        SecretKey wrongKey = pin.deriveExisting("999999".toCharArray());
+
+        // This exact failure (GCM tag doesn't verify) is how the unlock dialog detects a bad PIN.
+        assertThrows(KeyStorageException.class, () -> EncryptedFileKeyStorage.withPin(dirs, wrongKey).load());
+    }
 }

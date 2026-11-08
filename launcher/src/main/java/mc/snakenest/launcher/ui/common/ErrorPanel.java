@@ -6,17 +6,22 @@ import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.SwingConstants;
+import javax.swing.Timer;
 import java.awt.Component;
 import java.awt.FlowLayout;
 import java.awt.GridBagLayout;
+import java.awt.Toolkit;
+import java.awt.datatransfer.StringSelection;
 
 /**
- * A centered error message + "Réessayer"/"Retour" buttons, shown in place of a page's content
- * when it couldn't be loaded - e.g. a modpack's detail page after the server rate-limited a
- * spammed "Actualiser" click (429). Previously a failure here bounced the player straight back
- * to the list plus a modal {@code JOptionPane}, which read as the page being stuck/broken
- * rather than as a recoverable, retryable state - this replaces the page's content instead, the
- * same "loading" vs "here's what's actually on screen" reasoning as {@link LoadingPanel}.
+ * A centered error message + "Copier la stacktrace"/"Réessayer"/"Retour" buttons, shown in place
+ * of a page's content when it couldn't be loaded - e.g. a modpack's detail page after the server
+ * rate-limited a spammed "Actualiser" click (429). Previously a failure here bounced the player
+ * straight back to the list plus a modal {@code JOptionPane}, which read as the page being
+ * stuck/broken rather than as a recoverable, retryable state - this replaces the page's content
+ * instead, the same "loading" vs "here's what's actually on screen" reasoning as
+ * {@link LoadingPanel}. The copy button exists so a player reporting a bug can paste the actual
+ * stack trace instead of just the one-line message shown on screen.
  */
 public final class ErrorPanel extends JPanel {
 
@@ -24,7 +29,11 @@ public final class ErrorPanel extends JPanel {
     // unbroken line running off the edge of the content area.
     private static final int WRAP_WIDTH_PX = 420;
 
-    public ErrorPanel(String message, Runnable onRetry, Runnable onBack) {
+    public ErrorPanel(String message, String stackTrace, Runnable onRetry, Runnable onBack) {
+        this(message, stackTrace, onRetry, onBack, null);
+    }
+
+    public ErrorPanel(String message, String stackTrace, Runnable onRetry, Runnable onBack, Runnable onOffline) {
         setLayout(new GridBagLayout());
         setOpaque(false);
 
@@ -50,12 +59,34 @@ public final class ErrorPanel extends JPanel {
         backButton.addActionListener(e -> onBack.run());
         buttons.add(backButton);
 
+        JButton copyButton = new JButton("Copier la stacktrace");
+        copyButton.addActionListener(e -> copyToClipboard(copyButton, stackTrace));
+        buttons.add(copyButton);
+
         JButton retryButton = new JButton("Réessayer");
         retryButton.addActionListener(e -> onRetry.run());
         buttons.add(retryButton);
 
+        if (onOffline != null) {
+            JButton offline = new JButton("Mode hors connexion");
+            offline.addActionListener(e -> onOffline.run()); buttons.add(offline);
+        }
         inner.add(buttons);
         add(inner);
+    }
+
+    /** Briefly swaps the button's own label to "Copié !" rather than a separate toast/dialog - enough feedback for a one-off action. */
+    private static void copyToClipboard(JButton button, String text) {
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(text), null);
+        String original = button.getText();
+        button.setText("Copié !");
+        button.setEnabled(false);
+        Timer timer = new Timer(1500, e -> {
+            button.setText(original);
+            button.setEnabled(true);
+        });
+        timer.setRepeats(false);
+        timer.start();
     }
 
     private static String escapeHtml(String text) {

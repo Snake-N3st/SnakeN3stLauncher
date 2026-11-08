@@ -19,6 +19,7 @@ class ConfigStoreTest {
 
         assertNotNull(config);
         assertEquals(Theme.DARK, config.theme());
+        assertEquals(LaunchWindowAction.STAY_OPEN, config.launchWindowAction());
     }
 
     @Test
@@ -33,5 +34,40 @@ class ConfigStoreTest {
         LauncherConfig reloaded = store.load();
 
         assertEquals(Theme.LIGHT, reloaded.theme());
+    }
+
+    @Test
+    void launchWindowActionRoundTrips(@TempDir Path tempDir) {
+        AppDirs dirs = new AppDirs(tempDir);
+        ConfigStore store = new ConfigStore(dirs);
+
+        LauncherConfig config = new LauncherConfig();
+        config.setLaunchWindowAction(LaunchWindowAction.CLOSE_ON_LAUNCH);
+        store.save(config);
+
+        LauncherConfig reloaded = store.load();
+
+        assertEquals(LaunchWindowAction.CLOSE_ON_LAUNCH, reloaded.launchWindowAction());
+    }
+
+    @Test
+    void channelDefaultsToNull(@TempDir Path tempDir) {
+        ConfigStore store = new ConfigStore(new AppDirs(tempDir));
+
+        assertEquals(null, store.load().channel());
+    }
+
+    @Test
+    void channelRoundTrips(@TempDir Path tempDir) {
+        AppDirs dirs = new AppDirs(tempDir);
+        ConfigStore store = new ConfigStore(dirs);
+
+        LauncherConfig config = new LauncherConfig();
+        config.setChannel("beta");
+        store.save(config);
+
+        LauncherConfig reloaded = store.load();
+
+        assertEquals("beta", reloaded.channel());
     }
 }
