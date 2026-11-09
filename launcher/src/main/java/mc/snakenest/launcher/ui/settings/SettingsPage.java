@@ -77,6 +77,14 @@ public final class SettingsPage extends JPanel {
                 defaultJavaRow(currentDefaultJavaPath, onDefaultJavaPathChanged)));
         content.add(javax.swing.Box.createVerticalStrut(24));
 
+        JPanel benchmarkRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        benchmarkRow.setOpaque(false);
+        JButton benchmark = new JButton("Mesurer CPU + GPU (~10 s)");
+        benchmark.addActionListener(e -> BenchmarkDialog.show(this));
+        benchmarkRow.add(benchmark);
+        content.add(section("Performances", benchmarkRow));
+        content.add(javax.swing.Box.createVerticalStrut(24));
+
         content.add(section("Sécurité", pinRows(pinEnabled, onPinToggled)));
         content.add(javax.swing.Box.createVerticalStrut(24));
 

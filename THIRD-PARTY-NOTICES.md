@@ -48,7 +48,7 @@ Corresponding Source from inside the app itself.
 | [Gson](https://github.com/google/gson) | 2.14.0 | Apache-2.0 | JSON (de)serialization |
 | [FlatLaf](https://github.com/JFormDesigner/FlatLaf) | 3.7.1 | Apache-2.0 | Swing Look & Feel (light/dark theme) |
 | [DiscordIPC](https://github.com/jagrosh/DiscordIPC) (`com.github.jagrosh:DiscordIPC`, via JitPack - see `discord/README.md`) | commit `a8d6631` | Apache-2.0 | Optional Discord Rich Presence |
-| [junixsocket](https://github.com/kohlschutter/junixsocket) (transitive, via DiscordIPC) | 2.6.2 | Apache-2.0 | Unix domain socket used by DiscordIPC on Linux/macOS - the launcher's only native-code dependency |
+| [junixsocket](https://github.com/kohlschutter/junixsocket) (transitive, via DiscordIPC) | 2.6.2 | Apache-2.0 | Unix domain socket used by DiscordIPC on Linux/macOS |
 | [SLF4J API](https://www.slf4j.org/) (transitive, via DiscordIPC) | 2.0.7 | MIT | Logging facade required by DiscordIPC (unused otherwise - this launcher uses `java.util.logging`) |
 | [TwelveMonkeys ImageIO WebP](https://github.com/haraldk/TwelveMonkeys) (`com.twelvemonkeys.imageio:imageio-webp` + transitive `imageio-core`/`imageio-metadata`/`common-lang`/`common-io`/`common-image`) | 3.12.0 | BSD 3-Clause | Decoding `.webp` mod icons from Modrinth - the JDK's built-in ImageIO has no WebP reader at all |
 
@@ -74,3 +74,5 @@ shapes, not derived from any external asset. No Twitch/Discord glyphs are
 bundled - the sidebar shortcuts they were for were removed.
 
 Zstd-JNI 1.5.7-7 (https://github.com/luben/zstd-jni) : BSD-2-Clause ; libzstd 1.5.7 : BSD-3-Clause. Les licences complètes sont embarquées dans `licenses/zstd-jni-LICENSE` et `licenses/zstd-LICENSE`.
+
+LWJGL 3.3.6 (core, GLFW and OpenGL bindings): BSD-3-Clause; GLFW 3.4: Zlib. Native libraries are shipped for Windows/Linux/macOS (x86-64 and ARM64), loaded only in the GPU benchmark helper. Full texts: `licenses/lwjgl-LICENSE`, `licenses/glfw-LICENSE`.

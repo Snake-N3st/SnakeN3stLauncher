@@ -42,7 +42,9 @@ public final class LicensesDialog {
             new LicensedDependency("DiscordIPC", "a8d6631", "Apache-2.0", "Apache-2.0.txt"),
             new LicensedDependency("junixsocket", "2.6.2", "Apache-2.0", "Apache-2.0.txt"),
             new LicensedDependency("SLF4J API", "2.0.7", "MIT", "MIT.txt"),
-            new LicensedDependency("TwelveMonkeys ImageIO WebP", "3.12.0", "BSD 3-Clause", "BSD-3-Clause.txt")
+            new LicensedDependency("TwelveMonkeys ImageIO WebP", "3.12.0", "BSD 3-Clause", "BSD-3-Clause.txt"),
+            new LicensedDependency("LWJGL", "3.3.6", "BSD 3-Clause", "lwjgl-LICENSE"),
+            new LicensedDependency("GLFW", "3.4", "Zlib", "glfw-LICENSE")
     );
 
     private LicensesDialog() {
