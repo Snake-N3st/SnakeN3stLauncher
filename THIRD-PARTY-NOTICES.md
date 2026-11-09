@@ -72,3 +72,5 @@ All UI icons (play, document, gear, back-arrow, account, folder, download,
 refresh) in `ui.common.Icons` are drawn directly with Java2D - original
 shapes, not derived from any external asset. No Twitch/Discord glyphs are
 bundled - the sidebar shortcuts they were for were removed.
+
+Zstd-JNI 1.5.7-7 (https://github.com/luben/zstd-jni) : BSD-2-Clause ; libzstd 1.5.7 : BSD-3-Clause. Les licences complètes sont embarquées dans `licenses/zstd-jni-LICENSE` et `licenses/zstd-LICENSE`.
