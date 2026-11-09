@@ -1,9 +1,32 @@
 package mc.snakenest.launcher.benchmark;
 
 import java.util.Locale;
+import java.util.List;
 
 /** Synthetic workload measurements only: no calibrated Minecraft performance model exists. */
-public record BenchmarkResult(double cpuMillionIterations, double gpuMillionPixels, String renderer, String gpuError) {
+public record BenchmarkResult(double cpuMillionIterations, double gpuMillionPixels, String renderer, String gpuError,
+                              List<Sample> cpuSamples, List<Sample> gpuSamples) {
+    public record Sample(double seconds, double value) {}
+    public BenchmarkResult(double cpu, double gpu, String renderer, String error) {
+        this(cpu,gpu,renderer,error,List.of(),List.of());
+    }
+    public BenchmarkResult {
+        cpuSamples=validSamples(cpuSamples);gpuSamples=validSamples(gpuSamples);
+    }
+    public static List<Sample> validSamples(List<Sample> samples) {
+        if(samples==null || samples.size()>128)return List.of();
+        double previous=-1;
+        for(Sample sample:samples){
+            if(sample==null || !Double.isFinite(sample.seconds()) || sample.seconds()<0 || sample.seconds()>30
+                    || sample.seconds()<=previous || !Double.isFinite(sample.value()) || sample.value()<=0)return List.of();
+            previous=sample.seconds();
+        }
+        return List.copyOf(samples);
+    }
+    public boolean cpuValid(){return Double.isFinite(cpuMillionIterations)&&cpuMillionIterations>0;}
+    public boolean gpuValid(){return gpuError==null&&Double.isFinite(gpuMillionPixels)&&gpuMillionPixels>0&&!isSoftwareRenderer(renderer);}
+    public double gpuFrameMillis(){return 512d*512d/(gpuMillionPixels*1_000_000d)*1000d;}
+
     public static boolean isSoftwareRenderer(String renderer) {
         if (renderer == null || renderer.isBlank()) return true;
         String text = renderer.toLowerCase(Locale.ROOT);

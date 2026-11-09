@@ -6,6 +6,8 @@ import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryUtil;
 import java.nio.FloatBuffer;
 import java.util.Map;
+import java.util.List;
+import java.util.ArrayList;
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL20.*;
@@ -17,18 +19,27 @@ public final class BenchmarkMain {
     private static volatile int sink;
     private static final Gson JSON = new Gson();
     private BenchmarkMain() {}
-    public static double cpu(long durationNanos) {
+    public static double cpu(long durationNanos) {return cpu(durationNanos,null);}
+    private static double cpu(long durationNanos,List<BenchmarkResult.Sample> samples) {
         int x=0x13579bdf, sum=0;long iterations=0, start=System.nanoTime();
+        long binStart=start,binIterations=0;
         do {
             for(int i=0;i<32768;i++){x^=x<<13;x^=x>>>17;x^=x<<5;x=x*1664525+1013904223;sum^=x;}
             iterations+=32768;
+            long now=System.nanoTime();
+            if(samples!=null&&now-binStart>=250_000_000L){
+                samples.add(new BenchmarkResult.Sample((now-start)/1e9,(iterations-binIterations)/((now-binStart)/1e9)/1e6));
+                binStart=now;binIterations=iterations;
+            }
         } while(System.nanoTime()-start<durationNanos);
         sink=sum;
         return iterations/((System.nanoTime()-start)/1_000_000_000d)/1_000_000d;
     }
     public static void main(String[] args) {
         cpu(500_000_000L);
-        System.out.println(JSON.toJson(Map.of("cpu",cpu(3_000_000_000L))));System.out.flush();
+        List<BenchmarkResult.Sample> samples=new ArrayList<>();
+        double cpuScore=cpu(3_000_000_000L,samples);
+        System.out.println(JSON.toJson(Map.of("cpu",cpuScore,"cpuSamples",samples)));System.out.flush();
         try { gpu(); }
         catch(Throwable failure) {
             System.out.println(JSON.toJson(Map.of("error","Contexte OpenGL indisponible ("+failure.getClass().getSimpleName()+")")));
@@ -62,9 +73,10 @@ public final class BenchmarkMain {
             try {positions.put(new float[]{-1,-1,3,-1,-1,3}).flip();glBufferData(GL_ARRAY_BUFFER,positions,GL_STATIC_DRAW);} finally{MemoryUtil.memFree(positions);}
             glEnableVertexAttribArray(0);glVertexAttribPointer(0,2,GL_FLOAT,false,0,0L);glViewport(0,0,512,512);
             int seed=glGetUniformLocation(program,"uSeed");
-            frames(seed,500_000_000L);
-            double score=frames(seed,4_000_000_000L);
-            System.out.println(JSON.toJson(Map.of("gpu",score)));System.out.flush();glDeleteVertexArrays(vao);
+            frames(seed,500_000_000L,null);
+            List<BenchmarkResult.Sample> samples=new ArrayList<>();
+            double score=frames(seed,4_000_000_000L,samples);
+            System.out.println(JSON.toJson(Map.of("gpu",score,"gpuSamples",samples)));System.out.flush();glDeleteVertexArrays(vao);
         } finally {
             if(window!=0){if(vbo!=0)glDeleteBuffers(vbo);if(fbo!=0)glDeleteFramebuffers(fbo);if(texture!=0)glDeleteTextures(texture);if(program!=0)glDeleteProgram(program);if(vertex!=0)glDeleteShader(vertex);if(fragment!=0)glDeleteShader(fragment);GL.setCapabilities(null);glfwDestroyWindow(window);}
             glfwTerminate();glfwSetErrorCallback(null);callback.free();
@@ -75,9 +87,16 @@ public final class BenchmarkMain {
         if(glGetShaderi(shader,GL_COMPILE_STATUS)==GL_FALSE){glDeleteShader(shader);throw new IllegalStateException("Shader compile failed");}
         return shader;
     }
-    private static double frames(int seed,long duration) {
-        long start=System.nanoTime(),frames=0;
-        do{glUniform1f(seed,(frames%997)/997f);glDrawArrays(GL_TRIANGLES,0,3);glFinish();frames++;}while(System.nanoTime()-start<duration);
+    private static double frames(int seed,long duration,List<BenchmarkResult.Sample> samples) {
+        long start=System.nanoTime(),frames=0,binStart=start,binFrames=0;
+        do{
+            glUniform1f(seed,(frames%997)/997f);glDrawArrays(GL_TRIANGLES,0,3);glFinish();frames++;
+            long now=System.nanoTime();
+            if(samples!=null&&now-binStart>=100_000_000L){
+                samples.add(new BenchmarkResult.Sample((now-start)/1e9,(now-binStart)/(double)(frames-binFrames)/1e6));
+                binStart=now;binFrames=frames;
+            }
+        }while(System.nanoTime()-start<duration);
         return frames*512d*512d/((System.nanoTime()-start)/1e9)/1e6;
     }
 }
