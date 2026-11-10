@@ -80,4 +80,21 @@ class LauncherAppOfflineTest {
             } finally { ((ExecutorService)executor.get(app)).shutdownNow(); }
         }
     }
+    @Test void gameExitReplacesPreparationStatus() throws Exception {
+        AppDirs dirs=new AppDirs(root);ConfigStore config=new ConfigStore(dirs);
+        GameLaunchService launcher=mock(GameLaunchService.class);
+        LauncherApp app=new LauncherApp(dirs,URI.create("https://example.test"),"client",config,mock(ThemeController.class),
+                mock(LauncherAuthApiClient.class),mock(ModpackApiClient.class),mock(NewsApiClient.class),mock(KeyStorage.class),
+                mock(GameInstallService.class),launcher,mock(PinProtection.class),null,mock(BugReportApiClient.class));
+        field(app,"session",new PlayerSession(Ed25519KeyPair.fromSeed(new byte[32]),42L,"client"));field(app,"offlineMode",true);
+        new LocalPackCatalogStore(dirs.root().resolve("local-pack-catalog.json"),"https://example.test").cacheUsername(42,"FixturePlayer");
+        var page=mock(mc.snakenest.launcher.ui.modpack.ModpackDetailPage.class);when(page.slug()).thenReturn("pack");field(app,"currentDetailPage",page);
+        Process process=mock(Process.class);CompletableFuture<Process> exit=new CompletableFuture<>();when(process.onExit()).thenReturn(exit);when(launcher.launch(any())).thenReturn(process);
+        Method launch=LauncherApp.class.getDeclaredMethod("doInstallAndLaunch",ModpackSummary.class,ModpackManifest.class);launch.setAccessible(true);
+        try {
+            launch.invoke(app,new ModpackSummary("pack","Pack",null,null,false,"1",0),new ModpackManifest("1",null,null,0,"1.20.1","vanilla",null,List.of(),null,null));
+            verify(page).setStatus("Minecraft en cours.");exit.complete(process);verify(page).setStatus("Jeu fermé.");
+        }finally{var executor=LauncherApp.class.getDeclaredField("backgroundExecutor");executor.setAccessible(true);((ExecutorService)executor.get(app)).shutdownNow();}
+    }
+
 }

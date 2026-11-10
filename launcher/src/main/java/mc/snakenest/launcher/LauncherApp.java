@@ -1700,6 +1700,7 @@ final class LauncherApp {
                 installGame(modpack,manifest);
             }
         } finally {withDetailPage(modpack.slug(),ModpackDetailPage::clearTransferProgress);}
+        withDetailPage(modpack.slug(),page->page.setStatus(null));
     }
 
     private void syncModpackFiles(ModpackSummary modpack, ModpackManifest manifest) throws Exception {
@@ -1833,7 +1834,7 @@ final class LauncherApp {
         java.time.Instant launchedAt = java.time.Instant.now();
         instanceStates.transitionToRunning(modpack.slug(), process);
         applyLaunchWindowActionOnLaunch();
-        withDetailPage(modpack.slug(), page -> page.setRunning(true));
+        withDetailPage(modpack.slug(), page -> { page.setRunning(true); page.setStatus("Minecraft en cours."); });
         setCardRunning(modpack.slug(), true);
         if (discordPresence != null) {
             discordPresence.setPlaying(modpack.name());
@@ -1859,7 +1860,7 @@ final class LauncherApp {
             // reopen this modpack's page in the meantime (a brand new ModpackDetailPage instance
             // every time) - looking up the current page by slug here means this always reaches
             // whichever instance is actually on screen, not whichever one existed at launch time.
-            withDetailPage(modpack.slug(), page -> page.setRunning(false));
+            withDetailPage(modpack.slug(), page -> { page.setRunning(false); page.setStatus("Jeu fermé."); });
             setCardRunning(modpack.slug(), false);
             if (discordPresence != null) {
                 discordPresence.setBrowsing();
