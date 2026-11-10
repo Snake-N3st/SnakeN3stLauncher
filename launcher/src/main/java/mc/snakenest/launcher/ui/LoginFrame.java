@@ -31,9 +31,8 @@ import java.util.function.LongConsumer;
  *
  * <p>Branding (title/logo) is generic by default, or already the real
  * client's name/logo if {@link #setClientInfo} is called before
- * {@link #setVisible} - the composition root ({@code LauncherApp}) fetches
- * that over the network <em>before</em> constructing this frame at all, so
- * the window never flashes a placeholder then the real branding.
+ * {@link #setVisible}. Cached logos appear immediately; on a first run the
+ * composition root updates this panel when the background logo download completes.
  */
 public final class LoginFrame extends JFrame {
 

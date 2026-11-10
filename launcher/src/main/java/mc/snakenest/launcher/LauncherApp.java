@@ -319,6 +319,7 @@ final class LauncherApp {
         }
 
         if (loginFrame != null) {
+            loginFrame.setClientInfo(clientInfo != null ? clientInfo.name() : null, logo);
             loginFrame.setIconImage(logo);
         }
     }
@@ -783,9 +784,7 @@ final class LauncherApp {
                 SwingUtilities.invokeLater(this::showShell);
             });
         });
-        if (clientInfo != null) {
-            loginFrame.setClientInfo(clientInfo.name(), clientLogo);
-        }
+        loginFrame.setClientInfo(clientInfo != null ? clientInfo.name() : null, clientLogo);
         if (clientLogo != null) {
             loginFrame.setIconImage(clientLogo);
         }
