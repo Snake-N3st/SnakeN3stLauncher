@@ -25,6 +25,12 @@ per-package breakdown, and the plan this was built from
 (`.claude/plans` if still present, or ask for a recap) for the full
 architecture rationale.
 
+## Installation downloads
+
+Modpack downloads (batched blobs and external URLs) overlap Minecraft and loader installation. Verified files wait in a temporary cache until Minecraft is ready, then apply to the instance. The detail page shows separate progress rows for the modpack, Minecraft and file application. Cancellation waits for all workers to stop before the instance becomes available again.
+
+Packs that replace or delete Minecraft-owned paths keep the original sequential order. Installed packs can still launch offline without entering the download pipeline.
+
 ## Building
 
 ```bash

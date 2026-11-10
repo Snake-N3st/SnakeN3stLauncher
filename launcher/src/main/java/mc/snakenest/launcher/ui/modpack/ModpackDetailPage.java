@@ -50,6 +50,7 @@ public final class ModpackDetailPage extends JPanel {
     private Runnable onOffline;
     private final JLabel statusLabel = new JLabel(" ");
     private final JProgressBar progressBar = new JProgressBar(0, 100);
+    private final InstallProgressPanel transferProgress = new InstallProgressPanel();
     private final String slug;
     private boolean localOnly;
     private final JLabel availabilityLabel = new JLabel();
@@ -140,7 +141,9 @@ public final class ModpackDetailPage extends JPanel {
         offlineButton.addActionListener(e -> { if (onOffline != null) onOffline.run(); });
         progressStack.add(offlineButton, BorderLayout.EAST);
         progressStack.add(progressBar, BorderLayout.SOUTH);
-        footer.add(progressStack, BorderLayout.NORTH);
+        JPanel allProgress=new JPanel(new BorderLayout(0,6));allProgress.setOpaque(false);
+        allProgress.add(progressStack,BorderLayout.NORTH);allProgress.add(transferProgress,BorderLayout.CENTER);
+        footer.add(allProgress, BorderLayout.NORTH);
 
         JPanel buttons = new JPanel(new BorderLayout(8, 0));
         buttons.setOpaque(false);
@@ -377,4 +380,8 @@ public final class ModpackDetailPage extends JPanel {
             progressBar.setValue((int) Math.round(Math.max(0, Math.min(1, fraction)) * 100));
         });
     }
+    public void setTransferProgress(String key,String message,double fraction) {transferProgress.update(key,message,fraction);}
+    public void clearTransferProgress(String key) {transferProgress.clear(key);}
+    public void clearTransferProgress() {transferProgress.clearAll();}
+
 }

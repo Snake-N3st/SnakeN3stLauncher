@@ -1436,8 +1436,7 @@ final class LauncherApp {
         try {
             boolean localOnly = localOnly(modpack.slug());
             if (!localOnly) {
-                syncModpackFiles(modpack, manifest);
-                installGame(modpack, manifest);
+                prepareInstallation(modpack, manifest, false);
                 localCatalog.rememberSummary(modpack);
                 localCatalog.saveManifest(modpack.slug(), manifest);
             }
@@ -1530,8 +1529,7 @@ final class LauncherApp {
         java.util.concurrent.Future<?> task = backgroundExecutor.submit(() -> {
             try {
                 new LocalManifestStore().clear(dirs.instance(modpack.slug()));
-                syncModpackFiles(modpack, manifest, resetPlayerFiles);
-                installGame(modpack, manifest);
+                prepareInstallation(modpack, manifest, resetPlayerFiles);
                 localCatalog.rememberSummary(modpack);
                 localCatalog.saveManifest(modpack.slug(), manifest);
                 withDetailPage(modpack.slug(), page -> {
@@ -1688,6 +1686,23 @@ final class LauncherApp {
         return choice == 1;
     }
 
+    private void prepareInstallation(ModpackSummary modpack,ModpackManifest manifest,boolean resetPlayerFiles) throws Exception {
+        java.util.List<String> paths=new java.util.ArrayList<>();
+        for(var file:manifest.files())paths.add(file.path());
+        new LocalManifestStore().load(dirs.instance(modpack.slug())).ifPresent(previous->paths.addAll(previous.pathToHash().keySet()));
+        withDetailPage(modpack.slug(),page->page.setStatus("Préparation du modpack et de Minecraft…"));
+        try {
+            if(mc.snakenest.launcher.game.ParallelPreparation.canOverlap(paths)) {
+                mc.snakenest.launcher.game.ParallelPreparation.run(
+                        barrier->syncModpackFiles(modpack,manifest,resetPlayerFiles,barrier),
+                        ()->installGame(modpack,manifest));
+            } else {
+                syncModpackFiles(modpack,manifest,resetPlayerFiles);
+                installGame(modpack,manifest);
+            }
+        } finally {withDetailPage(modpack.slug(),ModpackDetailPage::clearTransferProgress);}
+    }
+
     private void syncModpackFiles(ModpackSummary modpack, ModpackManifest manifest) throws Exception {
         syncModpackFiles(modpack, manifest, false);
     }
@@ -1697,26 +1712,33 @@ final class LauncherApp {
      *                         when the player answered yes to the repair prompt
      */
     private void syncModpackFiles(ModpackSummary modpack, ModpackManifest manifest, boolean resetPlayerFiles) throws Exception {
+        syncModpackFiles(modpack,manifest,resetPlayerFiles,()->{});
+    }
+    private void syncModpackFiles(ModpackSummary modpack,ModpackManifest manifest,boolean resetPlayerFiles,
+            mc.snakenest.launcher.game.ParallelPreparation.Barrier beforeApplication) throws Exception {
         withDetailPage(modpack.slug(), page -> {
-            page.setStatus("Synchronisation des fichiers...");
-            page.setProgress(0);
+            page.setTransferProgress("modpack","Modpack · vérification des fichiers…",0);
         });
         var syncEngine = new ModpackSyncEngine(
                 new mc.snakenest.launcher.modpack.ModpackFileDownloader(modpackApi, new mc.snakenest.launcher.net.HttpJsonClient()),
                 new LocalManifestStore());
         syncEngine.sync(modpack.slug(), dirs.instance(modpack.slug()), manifest, session, new mc.snakenest.launcher.modpack.SyncProgressListener() {
             @Override
-            public void onFileStarted(String path, long size) {
-                withDetailPage(modpack.slug(), page -> page.setStatus("Application : " + path));
+            public void beforeFileApplication() throws InterruptedException {
+                withDetailPage(modpack.slug(),page->page.setTransferProgress("modpack","Modpack · téléchargé, attente de Minecraft…",1));
+                beforeApplication.await();
+            }
+            @Override public void onFileStarted(String path, long size) {
+                withDetailPage(modpack.slug(),page->page.setTransferProgress("files","Fichiers du modpack · "+path,Double.NaN));
             }
 
             @Override
             public void onDownloadProgress(long receivedBytes, long totalBytes) {
                 withDetailPage(modpack.slug(), page -> {
-                    page.setProgress(totalBytes > 0 ? 0.99 * Math.min(1.0, (double) receivedBytes / totalBytes) : 0);
-                    page.setStatus("Téléchargement du modpack : "
+                    page.setTransferProgress("modpack","Modpack · "
                             + mc.snakenest.launcher.util.HumanSize.format(receivedBytes) + " / "
-                            + mc.snakenest.launcher.util.HumanSize.format(totalBytes));
+                            + mc.snakenest.launcher.util.HumanSize.format(totalBytes),
+                            totalBytes>0?Math.min(1.0,(double)receivedBytes/totalBytes):0);
                 });
             }
 
@@ -1728,11 +1750,11 @@ final class LauncherApp {
             public void onDeleted(String path) {
             }
         }, resetPlayerFiles);
-        withDetailPage(modpack.slug(), page -> page.setProgress(1));
+        withDetailPage(modpack.slug(),page->{page.setTransferProgress("modpack","Modpack · terminé",1);page.clearTransferProgress("files");});
     }
 
     private void installGame(ModpackSummary modpack, ModpackManifest manifest) throws Exception {
-        withDetailPage(modpack.slug(), page -> { page.setStatus("Installation du jeu..."); page.setProgress(0); });
+        withDetailPage(modpack.slug(),page->page.setTransferProgress("game","Minecraft · préparation…",Double.NaN));
         Path instanceDir = dirs.instance(modpack.slug());
         AssetStorageMode assetStorageMode = configStore.load().assetStorageMode();
 
@@ -1746,13 +1768,13 @@ final class LauncherApp {
         gameInstallService.install(request, new GameInstallListener() {
             @Override
             public void onStepStarted(InstallStep step) {
-                withDetailPage(modpack.slug(), page -> page.setStatus(describeInstallStep(step)));
+                withDetailPage(modpack.slug(), page->page.setTransferProgress("game","Minecraft · "+describeInstallStep(step),Double.NaN));
             }
 
             @Override
             public void onProgress(long bytesDownloaded, long bytesTotal) {
                 if (bytesTotal > 0) {
-                    withDetailPage(modpack.slug(), page -> page.setProgress((double) bytesDownloaded / bytesTotal));
+                    withDetailPage(modpack.slug(), page->page.setTransferProgress("game",null,(double)bytesDownloaded/bytesTotal));
                 }
             }
         });
@@ -1765,7 +1787,7 @@ final class LauncherApp {
             notifyHardlinkFallback();
         }
 
-        withDetailPage(modpack.slug(), page -> page.setProgress(-1));
+        withDetailPage(modpack.slug(),page->page.setTransferProgress("game","Minecraft · terminé",1));
     }
 
     private void launchGame(ModpackSummary modpack, ModpackManifest manifest, String username) throws Exception {

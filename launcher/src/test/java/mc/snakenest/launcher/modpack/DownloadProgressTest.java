@@ -106,4 +106,22 @@ class DownloadProgressTest {
                 .sync("pack", root.resolve("instance"), manifest(List.of(file("a", null))), null, listener));
         assertTrue(updates.stream().allMatch(n -> n < CONTENT.length));
     }
+    @Test void externalFilesAreVerifiedBeforeApplicationAndFetchedOnlyOnce() throws Exception {
+        when(http.getRaw(URI.create("https://example.test/external"))).thenAnswer(call->response(CONTENT));
+        Path instance=root.resolve("external-instance");
+        SyncProgressListener listener=new SyncProgressListener(){
+            public void beforeFileApplication() throws IOException, InterruptedException {
+                verify(http,times(1)).getRaw(URI.create("https://example.test/external"));
+                assertFalse(Files.exists(instance.resolve("mods/external.jar")));
+            }
+            public void onFileStarted(String path,long size){}
+            public void onFileDone(String path){}
+            public void onDeleted(String path){}
+        };
+        new ModpackSyncEngine(new ModpackFileDownloader(api,http),new LocalManifestStore()).sync("pack",instance,
+                manifest(List.of(file("mods/external.jar","https://example.test/external"))),null,listener);
+        assertArrayEquals(CONTENT,Files.readAllBytes(instance.resolve("mods/external.jar")));
+        verify(http,times(1)).getRaw(URI.create("https://example.test/external"));
+    }
+
 }

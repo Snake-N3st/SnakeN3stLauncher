@@ -6,6 +6,9 @@ public interface SyncProgressListener {
     /** Actual network payload bytes; shared blobs count once and local cache reads count zero. */
     default void onDownloadProgress(long receivedBytes, long totalBytes) { }
 
+    /** Verified downloads are ready; callers may wait for the game installer before instance writes. */
+    default void beforeFileApplication() throws java.io.IOException, InterruptedException { }
+
     void onFileStarted(String path, long size);
 
     void onFileDone(String path);

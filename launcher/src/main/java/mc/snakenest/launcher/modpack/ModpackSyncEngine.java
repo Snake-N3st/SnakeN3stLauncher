@@ -9,11 +9,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 
 /**
  * Orchestrates a full sync of one modpack instance directory: diff against
@@ -67,6 +62,7 @@ public final class ModpackSyncEngine {
             DownloadProgress progress = new DownloadProgress(requested, listener);
             ModpackFileDownloader activeDownloader = downloader.withBlobCache(batchCache, progress::received);
             activeDownloader.prefetch(slug, requested, session);
+            listener.beforeFileApplication();
             downloadAllInParallel(slug, instanceDir, plan.toDownload(), session, listener, activeDownloader);
 
             // Sequential, unlike the downloads: each one reads the player's existing file, merges and
@@ -146,62 +142,16 @@ public final class ModpackSyncEngine {
 
     private void downloadAllInParallel(String slug, Path instanceDir, List<ManifestFile> files, PlayerSession session, SyncProgressListener listener, ModpackFileDownloader activeDownloader)
             throws IOException, InterruptedException, ModpackApiException {
-        if (files.isEmpty()) {
-            return;
-        }
-
-        int parallelism = Math.min(MAX_PARALLEL_DOWNLOADS, files.size());
-        ExecutorService executor = Executors.newFixedThreadPool(parallelism, r -> {
-            Thread t = new Thread(r, "modpack-download");
-            t.setDaemon(true);
-            return t;
+        List<mc.snakenest.launcher.util.ParallelTasks.Work> jobs=new ArrayList<>();
+        for(ManifestFile file:files)jobs.add(()->{
+            listener.onFileStarted(file.path(),file.size());
+            activeDownloader.download(slug,file,instanceDir,session);
+            listener.onFileDone(file.path());
         });
-        try {
-            List<Future<Void>> futures = new ArrayList<>(files.size());
-            for (ManifestFile file : files) {
-                Callable<Void> task = () -> {
-                    listener.onFileStarted(file.path(), file.size());
-                    activeDownloader.download(slug, file, instanceDir, session);
-                    listener.onFileDone(file.path());
-                    return null;
-                };
-                futures.add(executor.submit(task));
-            }
-            awaitAll(futures);
-        } finally {
-            executor.shutdownNow();
-        }
-    }
-
-    /** Waits for every download, then re-throws the first failure (if any) with its original checked type. */
-    private void awaitAll(List<Future<Void>> futures) throws IOException, InterruptedException, ModpackApiException {
-        Exception firstFailure = null;
-        for (Future<Void> future : futures) {
-            try {
-                future.get();
-            } catch (ExecutionException e) {
-                if (firstFailure == null) {
-                    firstFailure = e;
-                }
-            }
-        }
-        if (firstFailure == null) {
-            return;
-        }
-        Throwable cause = firstFailure.getCause();
-        if (cause instanceof IOException e) {
-            throw e;
-        }
-        if (cause instanceof ModpackApiException e) {
-            throw e;
-        }
-        if (cause instanceof InterruptedException e) {
-            throw e;
-        }
-        if (cause instanceof RuntimeException e) {
-            throw e;
-        }
-        throw new IOException("Modpack file download failed", cause);
+        try {mc.snakenest.launcher.util.ParallelTasks.run(jobs,MAX_PARALLEL_DOWNLOADS,()->{});}
+        catch(IOException|InterruptedException|ModpackApiException failure){throw failure;}
+        catch(RuntimeException failure){throw failure;}
+        catch(Exception failure){throw new IOException("Modpack file application failed",failure);}
     }
 
     /** Serializes worker callbacks and withholds completion until every network file verifies. */

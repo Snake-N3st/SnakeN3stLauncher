@@ -44,7 +44,17 @@ public final class ModpackFileDownloader {
 
     void prefetch(String slug, java.util.List<ManifestFile> files, PlayerSession session)
             throws IOException, InterruptedException {
-        new ModpackBatchDownloader(api).fetch(slug, files, session, blobCache, onBytes);
+        java.util.List<mc.snakenest.launcher.util.ParallelTasks.Work> jobs=new java.util.ArrayList<>();
+        jobs.add(()->new ModpackBatchDownloader(api).fetch(slug, files, session, blobCache, onBytes));
+        for(ManifestFile file:files) if(file.url()!=null)jobs.add(()->{
+            try(RawResponse response=fetch(slug,file,session)) {
+                if(!response.isSuccess())throw new IOException("External file download failed (HTTP "+response.statusCode()+")");
+                AtomicFiles.writeVerified(blobCache.resolve(cacheKey(file)),response.body(),file.hash());
+            }
+        });
+        try { mc.snakenest.launcher.util.ParallelTasks.run(jobs,4,()->{}); }
+        catch(IOException|InterruptedException failure){throw failure;}
+        catch(Exception failure){throw new IOException("Modpack prefetch failed",failure);}
     }
 
     public void download(String slug, ManifestFile file, Path instanceDir, PlayerSession session)
@@ -98,7 +108,13 @@ public final class ModpackFileDownloader {
         }
     }
 
+    private static String cacheKey(ManifestFile file) {
+        return file.url()==null?file.hash().toLowerCase(java.util.Locale.ROOT):"url-"+Sha256.hex((file.path()+"\0"+file.url()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
     private RawResponse fetch(String slug, ManifestFile file, PlayerSession session) throws IOException, InterruptedException {
+        if(blobCache!=null && java.nio.file.Files.isRegularFile(blobCache.resolve(cacheKey(file))))
+            return new RawResponse(200,java.nio.file.Files.newInputStream(blobCache.resolve(cacheKey(file))));
         if (file.url() != null) {
             RawResponse response = http.getRaw(URI.create(file.url()));
             return new RawResponse(response.statusCode(), new java.io.FilterInputStream(response.body()) {
